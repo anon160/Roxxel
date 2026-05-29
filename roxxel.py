@@ -94,6 +94,10 @@ class Roxxel:
             current_shard_path = f"{base_name}_{shard_idx:04d}.rox"
 
         current_offset = raw_data_size
+        # Truncate file to 0 if starting a fresh or overwritten shard
+        if current_offset == 0 and os.path.exists(current_shard_path):
+            open(current_shard_path, "wb").close()
+            
         f_out = open(current_shard_path, "ab")
 
         try:
@@ -154,6 +158,10 @@ class Roxxel:
                     raw_data_size = 0
 
         current_offset = raw_data_size
+        # Truncate file to 0 if starting fresh or overwriting an invalid archive
+        if current_offset == 0 and os.path.exists(path):
+            open(path, "wb").close()
+            
         with open(path, "ab") as f:
             for item_bytes in data_generator:
                 if not isinstance(item_bytes, bytes):
