@@ -1,0 +1,12 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Roxxel temporary data files
+*.rox
+
+# System & IDE files
+.DS_Store
+Thumbs.db
+.antigravity*
