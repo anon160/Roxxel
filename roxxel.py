@@ -220,9 +220,12 @@ class Roxxel:
             if file_signature != self.MAGIC_SIGNATURE:
                 raise ValueError(f"Corrupted signature in shard {path}.")
 
-            # Memory map the raw data and index table for this shard
+            # Open standard python file handle for safe, pythonic descriptor management
+            f_handle = open(path, "rb")
+
+            # Memory map the raw data and index table using the file handle
             raw_data = np.memmap(
-                path,
+                f_handle,
                 dtype=np.uint8,
                 mode="r",
                 offset=0,
@@ -230,7 +233,7 @@ class Roxxel:
             )
 
             index_table = np.memmap(
-                path,
+                f_handle,
                 dtype=np.int64,
                 mode="r",
                 offset=raw_data_size,
@@ -238,6 +241,7 @@ class Roxxel:
             )
 
             self._shards.append({
+                "file_handle": f_handle,
                 "raw_data": raw_data,
                 "index_table": index_table,
                 "total_records": total_records
@@ -261,10 +265,13 @@ class Roxxel:
             return
 
         for shard in self._shards:
-            if shard["raw_data"] is not None:
-                shard["raw_data"]._mmap.close()
-            if shard["index_table"] is not None:
-                shard["index_table"]._mmap.close()
+            # Delete references to the memmap objects
+            del shard["raw_data"]
+            del shard["index_table"]
+            
+            # Cleanly close the underlying Python file handle
+            if shard["file_handle"] is not None:
+                shard["file_handle"].close()
 
         self._shards = []
         self._shard_boundaries = []
