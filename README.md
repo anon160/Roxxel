@@ -54,6 +54,14 @@ To prevent **header contamination** (where inline metadata blocks corrupt flat m
 
 Because the raw data section is completely uninterrupted, you can interpret the entire archive as a single contiguous array in one line (e.g. for LLM token pre-training) or resolve individual records in $O(1)$ constant time.
 
+## 📦 Installation
+
+Roxxel can be installed via `pip` directly from PyPI:
+
+```bash
+pip install roxxel
+```
+
 ---
 
 ## 🚀 Getting Started
