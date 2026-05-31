@@ -373,8 +373,9 @@ class Roxxel:
         # Measure compiled block size from the first record
         compile_block_size = len(self[0]) 
         
-        element_size = np.dtype(dtype).itemsize
-        total_bytes_per_batch = batch_size * seq_len * element_size
+        # In Roxxel, each sequence element on-disk is a 1-byte character/token.
+        # We read 1 byte per token and cast to the desired target dtype (e.g. np.int32)
+        total_bytes_per_batch = batch_size * seq_len
         
         # O(1) complexity checkpoint fast-forward
         total_bytes_to_skip = start_step * total_bytes_per_batch
@@ -435,7 +436,7 @@ class Roxxel:
                 chunk = reservoir[:total_bytes_per_batch]
                 del reservoir[:total_bytes_per_batch]
                 
-                flat_tokens = np.frombuffer(chunk, dtype=dtype)
+                flat_tokens = np.frombuffer(chunk, dtype=np.uint8).astype(dtype)
                 numpy_batch = flat_tokens.reshape(batch_size, seq_len)
                 
                 if use_jax:
