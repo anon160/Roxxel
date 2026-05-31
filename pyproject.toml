@@ -24,9 +24,9 @@ dependencies = [
 
 [project.optional-dependencies]
 checkpoint = [
-    "jax>=0.4.0",
-    "flax>=0.8.0",
-    "orbax-checkpoint>=0.5.0"
+    "jax>=0.10.1",
+    "flax>=0.12.7",
+    "orbax-checkpoint>=0.11.40"
 ]
 
 [tool.hatch.build.targets.wheel]
