@@ -64,6 +64,18 @@ pip install roxxel
 
 ---
 
+## 🔄 API Evolution: The Old Way vs. The New Fused Way
+
+Roxxel has been completely overhauled in `v0.3.0` to fuse data compilation, sharding, and deep learning streaming into a single, cohesive high-performance engine.
+
+| Feature | The Old Way (v0.1.0) | The New Fused Way (v0.3.0+) |
+| :--- | :--- | :--- |
+| **Block Compilation** | Required wrapping low-level writers in a separate external compiler class (`RoxxelBlockCompiler`) to manually group and pad inputs. | **100% Fused & Native**: The `rox.write()` API consumes arbitrary string/byte generators, automatically chunks them, handles padding, and writes to disk in one call. |
+| **Shard Management** | Users had to write manual file rotation loops, file naming schemes, and offset tables to handle large datasets. | **Zero-Config Sharding**: Specify a glob path (e.g., `wiki_*.rox`) and `max_shard_bytes`. Roxxel handles shard rotation and virtualizes them into one contiguous list view. |
+| **DL / JAX Streaming** | Required writing custom shuffling code, buffer management, and tedious boilerplate `jax.device_put` pipelines. | **Unified Causal Streaming**: The `dataset.stream()` API handles globally shuffled batching, O(1) step resumption, and automatic JAX sharded device placement with zero double-copy overhead. |
+
+---
+
 ## 🚀 Getting Started
 
 ### 1. Compiling raw data into uniform blocks
