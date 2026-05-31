@@ -373,19 +373,17 @@ class Roxxel:
         # Measure compiled block size from the first record
         compile_block_size = len(self[0]) 
         
-        total_tokens_per_batch = batch_size * seq_len
-        blocks_per_step, remainder = divmod(total_tokens_per_batch, compile_block_size)
-        if remainder > 0:
-            blocks_per_step += 1 
-            
+        element_size = np.dtype(dtype).itemsize
+        total_bytes_per_batch = batch_size * seq_len * element_size
+        
         # O(1) complexity checkpoint fast-forward
-        consumed_blocks = start_step * blocks_per_step
+        total_bytes_to_skip = start_step * total_bytes_per_batch
+        consumed_blocks, remainder_bytes = divmod(total_bytes_to_skip, compile_block_size)
+        
         if consumed_blocks > 0:
             global_indices = global_indices[consumed_blocks:]
             print(f"⏭️ Roxxel instantly jumped past {consumed_blocks} blocks. Resuming at step {start_step}.")
         
-        total_steps = len(global_indices) // blocks_per_step
-
         # Detect JAX capability
         use_jax = False
         if mesh is not None or data_sharding is not None:
@@ -399,7 +397,6 @@ class Roxxel:
 
         if use_jax:
             import jax
-            import jax.numpy as jnp
             if mesh is None or data_sharding is None:
                 try:
                     from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
@@ -415,8 +412,19 @@ class Roxxel:
             record_ptr = 0
             reservoir = bytearray()
             
+            # Pre-fill reservoir with the remaining bytes of the partially consumed block
+            if remainder_bytes > 0 and record_ptr < len(global_indices):
+                idx = global_indices[record_ptr]
+                raw_slice = self[int(idx)]
+                reservoir.extend(raw_slice.tobytes()[remainder_bytes:])
+                record_ptr += 1
+            
+            # Recalculate total_steps based on strictly remaining bytes
+            remaining_total_bytes = len(global_indices[record_ptr:]) * compile_block_size + len(reservoir)
+            total_steps = remaining_total_bytes // total_bytes_per_batch
+            
             for _ in range(total_steps):
-                while len(reservoir) < total_tokens_per_batch:
+                while len(reservoir) < total_bytes_per_batch:
                     if record_ptr >= len(global_indices):
                         return
                     idx = global_indices[record_ptr]
@@ -424,14 +432,15 @@ class Roxxel:
                     reservoir.extend(raw_slice.tobytes())
                     record_ptr += 1
                     
-                chunk = reservoir[:total_tokens_per_batch]
-                del reservoir[:total_tokens_per_batch]
+                chunk = reservoir[:total_bytes_per_batch]
+                del reservoir[:total_bytes_per_batch]
                 
-                flat_tokens = np.frombuffer(chunk, dtype=np.uint8).astype(dtype)
+                flat_tokens = np.frombuffer(chunk, dtype=dtype)
                 numpy_batch = flat_tokens.reshape(batch_size, seq_len)
                 
                 if use_jax:
-                    yield jax.device_put(jnp.array(numpy_batch), data_sharding)
+                    # device_put bypasses default device materialization overhead for standard NumPy arrays
+                    yield jax.device_put(numpy_batch, data_sharding)
                 else:
                     yield numpy_batch
 
