@@ -2,7 +2,7 @@
 
 **Zero-RAM, Multi-Modal, Sharded Binary Dataset Manager**
 
-Roxxel is an ultra-lightweight (~300 lines of plain Python), zero-dependency (except NumPy) binary dataset format and reader designed for high-performance deep learning pipelines. 
+Roxxel is an ultra-lightweight, minimal-dependency, binary dataset format and reader designed for high-performance deep learning pipelines. 
 
 By implementing the standard Python sequence protocol over native `numpy.memmap` views, Roxxel virtualizes massive, multi-sharded, variable-length datasets on-disk as a simple, continuous in-memory list.
 
