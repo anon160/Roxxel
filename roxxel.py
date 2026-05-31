@@ -36,9 +36,9 @@ class Roxxel:
     # =====================================================================
     # API 1: FUSED FIXED-BLOCK WRITE STREAM (WITH SHARDING)
     # =====================================================================
-    def write(self, data_generator, block_size=4096, max_shard_bytes=None, separator=b"\xff"):
+    def write(self, data_generator, block_size=4096, max_shard_bytes=None, separator=b"\xff", dtype=None):
         """
-        Accepts a stream of strings or bytes, packs them into strictly uniform
+        Accepts a stream of strings, bytes, or numpy arrays, packs them into strictly uniform
         blocks of `block_size` bytes (with padding), and writes them to shards or a single file.
         """
         self.close()
@@ -52,16 +52,27 @@ class Roxxel:
         else:
             base_path = self.filepaths[0]
 
+        detected_dtype = dtype
+
         # Uniform Block generator packing logic
         def uniform_block_generator():
+            nonlocal detected_dtype
             buffer = bytearray()
             for item in data_generator:
                 if isinstance(item, str):
                     item_bytes = item.encode("utf-8")
+                    if detected_dtype is None:
+                        detected_dtype = "uint8"
                 elif isinstance(item, bytes) or isinstance(item, bytearray):
                     item_bytes = bytes(item)
+                    if detected_dtype is None:
+                        detected_dtype = "uint8"
+                elif isinstance(item, np.ndarray):
+                    item_bytes = item.tobytes()
+                    if detected_dtype is None:
+                        detected_dtype = str(item.dtype)
                 else:
-                    raise TypeError("Data generator items must be strings or raw bytes/bytearrays.")
+                    raise TypeError("Data generator items must be strings, raw bytes/bytearrays, or numpy arrays.")
                 
                 buffer.extend(item_bytes)
                 if separator:
@@ -83,14 +94,14 @@ class Roxxel:
                 yield bytes(buffer)
 
         # Call underlying write orchestrator
-        self._write_orchestrator(uniform_block_generator(), max_shard_bytes)
+        self._write_orchestrator(uniform_block_generator(), max_shard_bytes, lambda: detected_dtype or "uint8")
 
-    def _write_orchestrator(self, block_stream, max_shard_bytes=None):
+    def _write_orchestrator(self, block_stream, max_shard_bytes=None, get_dtype=lambda: "uint8"):
         base_path = self.filepaths[0] if len(self.filepaths) > 0 else self.raw_filepath
         if max_shard_bytes is None:
             if "*" in base_path or "?" in base_path:
                 base_path = base_path.replace("*", "base").replace("?", "base")
-            self._write_single_file(base_path, block_stream)
+            self._write_single_file(base_path, block_stream, get_dtype)
             return
 
         if base_path.endswith(".rox"):
@@ -119,11 +130,20 @@ class Roxxel:
                 shard_idx -= 1
                 
                 with open(current_shard_path, "rb") as f:
-                    f.seek(last_shard_size - 24)
-                    footer_block = f.read(24)
-                    total_records, raw_data_size, file_signature = struct.unpack("<qq8s", footer_block)
+                    if last_shard_size >= 32:
+                        f.seek(last_shard_size - 32)
+                        footer_block = f.read(32)
+                        total_records, raw_data_size, dtype_bytes, file_signature = struct.unpack("<qq8s8s", footer_block)
+                        if file_signature != b"ROXXEL02":
+                            f.seek(last_shard_size - 24)
+                            footer_block = f.read(24)
+                            total_records, raw_data_size, file_signature = struct.unpack("<qq8s", footer_block)
+                    else:
+                        f.seek(last_shard_size - 24)
+                        footer_block = f.read(24)
+                        total_records, raw_data_size, file_signature = struct.unpack("<qq8s", footer_block)
 
-                if file_signature == self.MAGIC_SIGNATURE:
+                if file_signature in (self.MAGIC_SIGNATURE, b"ROXXEL02"):
                     with open(current_shard_path, "rb") as f:
                         f.seek(raw_data_size)
                         end_offsets = np.fromfile(f, dtype="<i8", count=total_records).tolist()
@@ -149,10 +169,10 @@ class Roxxel:
         try:
             for block_bytes in block_stream:
                 payload_size = len(block_bytes)
-                estimated_size = current_offset + payload_size + (len(end_offsets) + 1) * 8 + 24
+                estimated_size = current_offset + payload_size + (len(end_offsets) + 1) * 8 + 32
                 if estimated_size > max_shard_bytes and len(end_offsets) > 0:
                     f_out.close()
-                    self._finalize_shard(current_shard_path, end_offsets, current_offset)
+                    self._finalize_shard(current_shard_path, end_offsets, current_offset, get_dtype())
                     
                     shard_idx += 1
                     current_shard_path = f"{base_name}_{shard_idx:04d}.rox"
@@ -169,9 +189,9 @@ class Roxxel:
             f_out.close()
 
         if len(end_offsets) > 0:
-            self._finalize_shard(current_shard_path, end_offsets, current_offset)
+            self._finalize_shard(current_shard_path, end_offsets, current_offset, get_dtype())
 
-    def _write_single_file(self, path, block_stream):
+    def _write_single_file(self, path, block_stream, get_dtype=lambda: "uint8"):
         end_offsets = []
         raw_data_size = 0
 
@@ -179,11 +199,20 @@ class Roxxel:
             total_file_bytes = os.path.getsize(path)
             if total_file_bytes >= 24:
                 with open(path, "rb") as f:
-                    f.seek(total_file_bytes - 24)
-                    footer_block = f.read(24)
-                    total_records, raw_data_size, file_signature = struct.unpack("<qq8s", footer_block)
+                    if total_file_bytes >= 32:
+                        f.seek(total_file_bytes - 32)
+                        footer_block = f.read(32)
+                        total_records, raw_data_size, dtype_bytes, file_signature = struct.unpack("<qq8s8s", footer_block)
+                        if file_signature != b"ROXXEL02":
+                            f.seek(total_file_bytes - 24)
+                            footer_block = f.read(24)
+                            total_records, raw_data_size, file_signature = struct.unpack("<qq8s", footer_block)
+                    else:
+                        f.seek(total_file_bytes - 24)
+                        footer_block = f.read(24)
+                        total_records, raw_data_size, file_signature = struct.unpack("<qq8s", footer_block)
 
-                if file_signature == self.MAGIC_SIGNATURE:
+                if file_signature in (self.MAGIC_SIGNATURE, b"ROXXEL02"):
                     print(f"♻️ Found existing archive. Stripping index and footer...")
                     with open(path, "rb") as f:
                         f.seek(raw_data_size)
@@ -208,15 +237,22 @@ class Roxxel:
                 end_offsets.append(current_offset)
 
         if len(end_offsets) > 0:
-            self._finalize_shard(path, end_offsets, current_offset)
+            self._finalize_shard(path, end_offsets, current_offset, get_dtype())
 
-    def _finalize_shard(self, path, end_offsets, raw_data_size):
+    def _finalize_shard(self, path, end_offsets, raw_data_size, dtype="uint8"):
         total_records = len(end_offsets)
+        # Pad or truncate dtype to exactly 8 bytes
+        dtype_bytes = dtype.encode("utf-8")
+        if len(dtype_bytes) < 8:
+            dtype_bytes = dtype_bytes + b"\x00" * (8 - len(dtype_bytes))
+        elif len(dtype_bytes) > 8:
+            dtype_bytes = dtype_bytes[:8]
+
         with open(path, "ab") as f:
             np.array(end_offsets, dtype="<i8").tofile(f)
-            footer = struct.pack("<qq8s", total_records, raw_data_size, self.MAGIC_SIGNATURE)
+            footer = struct.pack("<qq8s8s", total_records, raw_data_size, dtype_bytes, b"ROXXEL02")
             f.write(footer)
-        print(f"✅ Finalized shard {os.path.basename(path)} - Records: {total_records}, Data Bytes: {raw_data_size}")
+        print(f"✅ Finalized shard {os.path.basename(path)} - Records: {total_records}, Data Bytes: {raw_data_size}, Dtype: {dtype}")
 
     # =====================================================================
     # API 2: READ / LOAD (SHARDED SEQUENCE INTERFACE)
@@ -245,12 +281,27 @@ class Roxxel:
                 raise ValueError(f"Corrupted shard {path}: size is less than footer size.")
 
             with open(path, "rb") as f:
-                f.seek(total_file_bytes - 24)
-                footer_block = f.read(24)
-                total_records, raw_data_size, file_signature = struct.unpack("<qq8s", footer_block)
-
-            if file_signature != self.MAGIC_SIGNATURE:
-                raise ValueError(f"Corrupted signature in shard {path}.")
+                # Try new 32-byte footer format first (ROXXEL02)
+                if total_file_bytes >= 32:
+                    f.seek(total_file_bytes - 32)
+                    footer_block = f.read(32)
+                    total_records, raw_data_size, dtype_bytes, file_signature = struct.unpack("<qq8s8s", footer_block)
+                    if file_signature == b"ROXXEL02":
+                        dtype = dtype_bytes.decode("utf-8").strip("\x00")
+                    else:
+                        f.seek(total_file_bytes - 24)
+                        footer_block = f.read(24)
+                        total_records, raw_data_size, file_signature = struct.unpack("<qq8s", footer_block)
+                        if file_signature != self.MAGIC_SIGNATURE:
+                            raise ValueError(f"Corrupted signature in shard {path}.")
+                        dtype = "uint8"
+                else:
+                    f.seek(total_file_bytes - 24)
+                    footer_block = f.read(24)
+                    total_records, raw_data_size, file_signature = struct.unpack("<qq8s", footer_block)
+                    if file_signature != self.MAGIC_SIGNATURE:
+                        raise ValueError(f"Corrupted signature in shard {path}.")
+                    dtype = "uint8"
 
             # Open standard python file handle for safe, pythonic descriptor management
             f_handle = open(path, "rb")
@@ -276,7 +327,8 @@ class Roxxel:
                 "file_handle": f_handle,
                 "raw_data": raw_data,
                 "index_table": index_table,
-                "total_records": total_records
+                "total_records": total_records,
+                "dtype": dtype
             })
 
             self._total_records += total_records
@@ -286,6 +338,9 @@ class Roxxel:
         if len(self._shards) == 1:
             self.raw_data = self._shards[0]["raw_data"]
             self.index_table = self._shards[0]["index_table"]
+            self.dtype = self._shards[0]["dtype"]
+        elif len(self._shards) > 1:
+            self.dtype = self._shards[0]["dtype"]
 
         self._is_open = True
 
@@ -373,9 +428,16 @@ class Roxxel:
         # Measure compiled block size from the first record
         compile_block_size = len(self[0]) 
         
-        # In Roxxel, each sequence element on-disk is a 1-byte character/token.
-        # We read 1 byte per token and cast to the desired target dtype (e.g. np.int32)
-        total_bytes_per_batch = batch_size * seq_len
+        # Read the file's native data type from metadata (defaults to uint8 for older ROXXEL01 files)
+        native_dtype_name = getattr(self, "dtype", "uint8")
+        native_dtype = np.dtype(native_dtype_name)
+        element_size = native_dtype.itemsize
+        
+        # Calculate bytes per batch based on the file's native element size
+        total_bytes_per_batch = batch_size * seq_len * element_size
+        
+        # Calculate target training dtype (defaults to np.int32)
+        dtype = np.dtype(dtype)
         
         # O(1) complexity checkpoint fast-forward
         total_bytes_to_skip = start_step * total_bytes_per_batch
@@ -436,7 +498,8 @@ class Roxxel:
                 chunk = reservoir[:total_bytes_per_batch]
                 del reservoir[:total_bytes_per_batch]
                 
-                flat_tokens = np.frombuffer(chunk, dtype=np.uint8).astype(dtype)
+                # Parse using the dataset's native dtype, then cast to target training dtype
+                flat_tokens = np.frombuffer(chunk, dtype=native_dtype).astype(dtype)
                 numpy_batch = flat_tokens.reshape(batch_size, seq_len)
                 
                 if use_jax:
