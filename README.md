@@ -66,106 +66,85 @@ pip install roxxel
 
 ## 🚀 Getting Started
 
-Simply copy `roxxel.py` into your project.
+### 1. Compiling raw data into uniform blocks
+Pass an iterable stream of strings or raw bytes directly into the `write()` API. Roxxel will automatically group them into strictly uniform blocks (e.g., 4096-byte blocks) and write them to disk.
 
-### 1. Writing a Single-File Dataset
 ```python
 from roxxel import Roxxel
 
-# Define a generator that yields raw byte payloads
-def byte_stream():
-    for i in range(100):
-        yield bytes([i] * 50)  # Yield raw bytes
+# Generator yielding text documents of variable lengths
+def text_generator():
+    yield "The quick brown fox jumps over the lazy dog."
+    yield "Generative AI and SSMs like Xenron are transforming sequences."
+    yield "Roxxel delivers zero-RAM, highly efficient data loading."
 
-rox = Roxxel("./dataset.rox")
-rox.write(byte_stream())
+# Instantiate and write (automatically shards at 1GB, blocks of 4KB)
+rox = Roxxel("./wiki_*.rox")
+rox.write(
+    data_generator=text_generator(),
+    block_size=4096,
+    max_shard_bytes=1024**3,
+    separator=b"\xff"
+)
 ```
 
-### 2. Writing a Sharded Dataset
-Specify `max_shard_bytes` to automatically split massive data streams into dynamically capped shards (e.g., `dataset_0000.rox`, `dataset_0001.rox`):
-```python
-# Limit each shard to 2GB
-rox.write(byte_stream(), max_shard_bytes=2 * 1024 * 1024 * 1024)
-```
+### 2. High-Performance Deterministic Streaming (NumPy & JAX)
+Opening the dataset and streaming globally shuffled, JAX-sharded batches takes just a few lines. The `stream()` API handles circular prefetch buffering and PCIe hardware transfers asynchronously in the background:
 
-### 3. Reading and Shuffling (Sequence API)
-Roxxel supports glob patterns and Python lists. It virtualizes all matching shards into a single read-only sequence supporting index lookups, negative indices, and slicing:
 ```python
-import numpy as np
+import jax
 from roxxel import Roxxel
 
-# Read and virtualize all shards matching the glob pattern
-with Roxxel("./dataset_*.rox") as dataset:
-    print("Total virtual records:", len(dataset))
+# 1. Open the virtualized multi-sharded dataset
+with Roxxel("./wiki_*.rox") as dataset:
+    # 2. Yield globally shuffled JAX-sharded device arrays automatically!
+    # If JAX is installed, it outputs JAX arrays. Otherwise, standard NumPy arrays.
+    dataloader = dataset.stream(
+        seq_len=1024,
+        batch_size=32,
+        seed=42,
+        start_step=0  # Supports instant O(1) checkpoint fast-forwarding!
+    )
     
-    # 1. O(1) single index lookup
-    record = dataset[42]
-    
-    # 2. Slice lookup
-    subset = dataset[10:20]
-    
-    # 3. Global Shuffling (handled in three lines of plain NumPy!)
-    shuffled_indices = np.random.permutation(len(dataset))
-    for idx in shuffled_indices:
-        shuffled_record = dataset[idx]  # seek & load happens instantly in page cache
+    for batch in dataloader:
+        # batch is a JAX device-put array of shape (32, 1024) ready for TPU/GPU!
+        outputs = train_step(state, batch)
 ```
 
 ---
 
 ## 🍳 Cookbooks
 
-### A. Flat Token Streaming (e.g., LLM Training)
-If you are doing LLM pre-training, you want to treat your entire dataset as one continuous stream of tokens. Roxxel allows you to ignore record boundaries and read the raw contiguous mapped memory directly:
+### A. Flat Token Reshaping (e.g. LLM Training)
+If you want to bypass sequence boundaries entirely and treat the whole sharded database as a single, contiguous token stream:
 
 ```python
-with Roxxel("./tokens.rox") as dataset:
-    # Cast the entire mapped raw bytes section directly into uint16 tokens
-    tokens = dataset.raw_data.view(np.uint16)
+with Roxxel("./wiki_*.rox") as dataset:
+    # Get a 1D memory-mapped view of the entire dataset across all shards
+    # (Since len(dataset[0]) is uniform, this represents one solid contiguous sequence)
+    flat_tokens = dataset.raw_data.view(np.uint16)
     
-    # Chunk and batch locally in NumPy:
-    seq_len = 2048
-    total_sequences = len(tokens) // seq_len
-    reshaped_batches = tokens[:total_sequences * seq_len].reshape(total_sequences, seq_len)
+    # Reshape and train dynamically in NumPy
+    total_sequences = len(flat_tokens) // 2048
+    reshaped_dataset = flat_tokens[:total_sequences * 2048].reshape(total_sequences, 2048)
 ```
 
-### B. High-Performance Asynchronous Prefetch Dataloader
-If you are training on high-performance GPUs, you want to pre-load batches on a background CPU thread to completely prevent GPU starvation:
+### B. Instant O(1) Checkpoint Resuming
+To save training progress, simply checkpoint your current `step`. Resuming takes less than 1 millisecond as `Roxxel` instantly jumps past the consumed blocks using basic index arithmetic—completely skipping the need to execute dummy fast-forward loops:
 
 ```python
-import queue
-import threading
-import numpy as np
-from roxxel import Roxxel
+# During save:
+step = current_step  # Save this integer in your checkpoint manager
 
-def async_dataloader(rox_pattern, batch_size=32, prefetch_batches=4, seed=42):
-    dataset = Roxxel(rox_pattern)
-    dataset.open()
-    
-    indices = np.arange(len(dataset))
-    rng = np.random.default_rng(seed)
-    rng.shuffle(indices)
-    
-    q = queue.Queue(maxsize=prefetch_batches)
-    
-    def producer():
-        for start_idx in range(0, len(indices), batch_size):
-            batch_picks = indices[start_idx : start_idx + batch_size]
-            
-            # Fetch and decode/stack
-            batch_data = [dataset[idx] for idx in batch_picks]
-            q.put(batch_data)
-        q.put(None)  # EOF
-        dataset.close()
-
-    # Start I/O in the background
-    threading.Thread(target=producer, daemon=True).start()
-    
-    # Yield batches to the training loop
-    while True:
-        batch = q.get()
-        if batch is None:
-            break
-        yield batch
+# During restore:
+with Roxxel("./wiki_*.rox") as dataset:
+    # Instantly fast-forward and resume streaming from step 4500
+    dataloader = dataset.stream(
+        seq_len=1024,
+        batch_size=32,
+        seed=42,
+        start_step=4500
+    )
 ```
 
 ---

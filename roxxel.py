@@ -6,9 +6,9 @@ import numpy as np
 
 class Roxxel:
     """
-    A bare-bones, zero-RAM single-file or multi-sharded dataset manager.
-    Stores raw contiguous payload data, a trailing index table, and a 24-byte footer.
-    Seamlessly virtualizes multiple shards on-disk into a single continuous sequence.
+    A bare-bones, zero-RAM sharded block-based dataset manager.
+    Packs arbitrary data streams into strictly uniform blocks on disk,
+    virtualizes sharded structures, and streams high-performance JAX/NumPy batches.
     """
     MAGIC_SIGNATURE = b"ROXXEL01"  # 8-byte secure signature tag
 
@@ -19,11 +19,13 @@ class Roxxel:
         self._is_open = False
         self._shards = []
         self._shard_boundaries = []
+        self.raw_filepath = None
 
         # Support single string, list of strings, or glob patterns
         if isinstance(filepath, list):
             self.filepaths = filepath
         elif isinstance(filepath, str):
+            self.raw_filepath = filepath
             if "*" in filepath or "?" in filepath:
                 self.filepaths = sorted(glob.glob(filepath))
             else:
@@ -32,28 +34,72 @@ class Roxxel:
             raise TypeError("filepath must be a string (file/pattern) or a list of strings.")
 
     # =====================================================================
-    # API 1: WRITE STREAM (WITH SHARDING SUPPORT)
+    # API 1: FUSED FIXED-BLOCK WRITE STREAM (WITH SHARDING)
     # =====================================================================
-    def write(self, data_generator, max_shard_bytes=None):
+    def write(self, data_generator, block_size=4096, max_shard_bytes=None, separator=b"\xff"):
         """
-        Accepts an iterable stream of raw python byte objects.
-        If max_shard_bytes is None, writes/appends to a single file.
-        If max_shard_bytes is provided, splits the stream across multiple shards (e.g., dataset_0000.rox).
+        Accepts a stream of strings or bytes, packs them into strictly uniform
+        blocks of `block_size` bytes (with padding), and writes them to shards or a single file.
         """
         self.close()
 
+        # Deduce a write path even if self.filepaths is empty due to a new glob pattern
         if len(self.filepaths) == 0:
-            raise ValueError("No filepath specified to write to.")
+            if self.raw_filepath:
+                base_path = self.raw_filepath
+            else:
+                raise ValueError("No filepath specified to write to.")
+        else:
+            base_path = self.filepaths[0]
 
+        # Uniform Block generator packing logic
+        def uniform_block_generator():
+            buffer = bytearray()
+            for item in data_generator:
+                if isinstance(item, str):
+                    item_bytes = item.encode("utf-8")
+                elif isinstance(item, bytes) or isinstance(item, bytearray):
+                    item_bytes = bytes(item)
+                else:
+                    raise TypeError("Data generator items must be strings or raw bytes/bytearrays.")
+                
+                buffer.extend(item_bytes)
+                if separator:
+                    buffer.extend(separator)
+                
+                while len(buffer) >= block_size:
+                    yield bytes(buffer[:block_size])
+                    del buffer[:block_size]
+            
+            # Flush trailing residual blocks with padding
+            if len(buffer) > 0:
+                pad_len = block_size - len(buffer)
+                if separator:
+                    pad_bytes = (separator * (pad_len // len(separator) + 1))[:pad_len]
+                else:
+                    pad_bytes = b"\x00" * pad_len
+                
+                buffer.extend(pad_bytes)
+                yield bytes(buffer)
+
+        # Call underlying write orchestrator
+        self._write_orchestrator(uniform_block_generator(), max_shard_bytes)
+
+    def _write_orchestrator(self, block_stream, max_shard_bytes=None):
+        base_path = self.filepaths[0] if len(self.filepaths) > 0 else self.raw_filepath
         if max_shard_bytes is None:
-            self._write_single_file(self.filepaths[0], data_generator)
+            if "*" in base_path or "?" in base_path:
+                base_path = base_path.replace("*", "base").replace("?", "base")
+            self._write_single_file(base_path, block_stream)
             return
 
-        base_path = self.filepaths[0]
         if base_path.endswith(".rox"):
             base_name = base_path[:-4]
         else:
             base_name = base_path
+
+        if "*" in base_name or "?" in base_name:
+            base_name = base_name.replace("*", "base").replace("?", "base")
 
         # Find first unused shard index
         shard_idx = 0
@@ -97,19 +143,12 @@ class Roxxel:
         # Truncate file to 0 if starting a fresh or overwritten shard
         if current_offset == 0 and os.path.exists(current_shard_path):
             open(current_shard_path, "wb").close()
-            
+
         f_out = open(current_shard_path, "ab")
 
         try:
-            for item_bytes in data_generator:
-                if not isinstance(item_bytes, bytes):
-                    raise TypeError("Data generator must exclusively yield raw python 'bytes' objects.")
-                
-                payload_size = len(item_bytes)
-                if payload_size == 0:
-                    continue
-
-                # Predict shard size: raw data + index table (8 bytes per record) + 24-byte footer
+            for block_bytes in block_stream:
+                payload_size = len(block_bytes)
                 estimated_size = current_offset + payload_size + (len(end_offsets) + 1) * 8 + 24
                 if estimated_size > max_shard_bytes and len(end_offsets) > 0:
                     f_out.close()
@@ -123,7 +162,7 @@ class Roxxel:
                     current_offset = 0
                     f_out = open(current_shard_path, "ab")
 
-                f_out.write(item_bytes)
+                f_out.write(block_bytes)
                 current_offset += payload_size
                 end_offsets.append(current_offset)
         finally:
@@ -132,7 +171,7 @@ class Roxxel:
         if len(end_offsets) > 0:
             self._finalize_shard(current_shard_path, end_offsets, current_offset)
 
-    def _write_single_file(self, path, data_generator):
+    def _write_single_file(self, path, block_stream):
         end_offsets = []
         raw_data_size = 0
 
@@ -161,18 +200,11 @@ class Roxxel:
         # Truncate file to 0 if starting fresh or overwriting an invalid archive
         if current_offset == 0 and os.path.exists(path):
             open(path, "wb").close()
-            
-        with open(path, "ab") as f:
-            for item_bytes in data_generator:
-                if not isinstance(item_bytes, bytes):
-                    raise TypeError("Data generator must exclusively yield raw python 'bytes' objects.")
-                
-                payload_size = len(item_bytes)
-                if payload_size == 0:
-                    continue
 
-                f.write(item_bytes)
-                current_offset += payload_size
+        with open(path, "ab") as f:
+            for block_bytes in block_stream:
+                f.write(block_bytes)
+                current_offset += len(block_bytes)
                 end_offsets.append(current_offset)
 
         if len(end_offsets) > 0:
@@ -320,3 +352,87 @@ class Roxxel:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
+
+    # =====================================================================
+    # API 3: UNIFIED SEQUENCE STREAMING ENGINE (NUMPY / JAX)
+    # =====================================================================
+    def stream(self, seq_len, batch_size=32, seed=42, start_step=0, dtype=np.int32, mesh=None, data_sharding=None):
+        """
+        Streams from an open Roxxel instance with absolute bit-level determinism.
+        If JAX is installed and mesh parameters are provided/accessible, returns JAX device arrays.
+        Otherwise, yields standard NumPy batches of shape (batch_size, seq_len).
+        """
+        total_blocks = len(self)
+        if total_blocks == 0:
+            raise ValueError("Roxxel database is empty or not opened.")
+        
+        global_indices = np.arange(total_blocks)
+        rng = np.random.default_rng(seed)
+        rng.shuffle(global_indices)
+        
+        # Measure compiled block size from the first record
+        compile_block_size = len(self[0]) 
+        
+        total_tokens_per_batch = batch_size * seq_len
+        blocks_per_step, remainder = divmod(total_tokens_per_batch, compile_block_size)
+        if remainder > 0:
+            blocks_per_step += 1 
+            
+        # O(1) complexity checkpoint fast-forward
+        consumed_blocks = start_step * blocks_per_step
+        if consumed_blocks > 0:
+            global_indices = global_indices[consumed_blocks:]
+            print(f"⏭️ Roxxel instantly jumped past {consumed_blocks} blocks. Resuming at step {start_step}.")
+        
+        total_steps = len(global_indices) // blocks_per_step
+
+        # Detect JAX capability
+        use_jax = False
+        if mesh is not None or data_sharding is not None:
+            use_jax = True
+        else:
+            try:
+                import jax
+                use_jax = True
+            except ImportError:
+                use_jax = False
+
+        if use_jax:
+            import jax
+            import jax.numpy as jnp
+            if mesh is None or data_sharding is None:
+                try:
+                    from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+                    from jax.experimental import mesh_utils
+                    devices = jax.devices()
+                    mesh = Mesh(mesh_utils.create_device_mesh((len(devices),)), axis_names=('data',))
+                    data_sharding = NamedSharding(mesh, P('data', None))
+                except Exception as e:
+                    print("⚠️ Could not automatically construct JAX sharding mesh, falling back to NumPy stream: " + str(e))
+                    use_jax = False
+
+        def batch_generator():
+            record_ptr = 0
+            reservoir = bytearray()
+            
+            for _ in range(total_steps):
+                while len(reservoir) < total_tokens_per_batch:
+                    if record_ptr >= len(global_indices):
+                        return
+                    idx = global_indices[record_ptr]
+                    raw_slice = self[int(idx)]
+                    reservoir.extend(raw_slice.tobytes())
+                    record_ptr += 1
+                    
+                chunk = reservoir[:total_tokens_per_batch]
+                del reservoir[:total_tokens_per_batch]
+                
+                flat_tokens = np.frombuffer(chunk, dtype=np.uint8).astype(dtype)
+                numpy_batch = flat_tokens.reshape(batch_size, seq_len)
+                
+                if use_jax:
+                    yield jax.device_put(jnp.array(numpy_batch), data_sharding)
+                else:
+                    yield numpy_batch
+
+        return batch_generator()
