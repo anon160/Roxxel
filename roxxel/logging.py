@@ -5,7 +5,7 @@ import traceback
 from queue import Queue
 from logging.handlers import QueueHandler, QueueListener
 
-class RoxxelLogger:
+class Logger:
     """
     A high-performance, non-blocking, asynchronous logger designed for 
     distributed JAX/Flax pre-training clusters (e.g. multi-host TPU/GPU Pods).
@@ -22,7 +22,7 @@ class RoxxelLogger:
     to disk before termination, and any uncaught tracebacks are captured cleanly 
     in the system log.
     """
-    def __init__(self, log_dir: str, filename_prefix: str = "xenron", logger_name: str = "XenronCore"):
+    def __init__(self, log_dir: str, filename_prefix: str = "roxxel", logger_name: str = "RoxxelCore"):
         self.log_dir = log_dir
         
         try:
@@ -81,6 +81,3 @@ class RoxxelLogger:
         """Forces the background asynchronous write threads to complete and lock files."""
         if self.is_rank_zero and hasattr(self, 'listener'):
             self.listener.stop()  # Drains queue completely to disk before closing
-
-# Alias for backwards compatibility with user's Xenron code
-XenronLogger = RoxxelLogger

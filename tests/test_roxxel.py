@@ -99,16 +99,16 @@ def test_int32_tokenized_dataset():
     clean_shards(base_name)
     print("Tokenized int32 Dataset passed successfully!\n")
 
-def test_roxxel_logger():
-    print("--- Testing RoxxelLogger / XenronLogger ---")
-    from roxxel import RoxxelLogger
+def test_logger():
+    print("--- Testing Logger ---")
+    from roxxel import Logger
     import tempfile
     import shutil
     
     temp_dir = tempfile.mkdtemp()
     try:
         # Test normal logging
-        with RoxxelLogger(log_dir=temp_dir, filename_prefix="test_log") as logger:
+        with Logger(log_dir=temp_dir, filename_prefix="test_log") as logger:
             logger.log_message("Hello from the test!")
         
         log_file = os.path.join(temp_dir, "test_log_system.log")
@@ -119,7 +119,7 @@ def test_roxxel_logger():
             
         # Test exception tracking and bubbling
         try:
-            with RoxxelLogger(log_dir=temp_dir, filename_prefix="test_crash") as logger:
+            with Logger(log_dir=temp_dir, filename_prefix="test_crash") as logger:
                 logger.log_message("About to crash...")
                 raise ValueError("Oops, simulation crash!")
         except ValueError as e:
@@ -135,9 +135,9 @@ def test_roxxel_logger():
 
     finally:
         shutil.rmtree(temp_dir)
-    print("RoxxelLogger tests passed successfully!\n")
+    print("Logger tests passed successfully!\n")
 
 if __name__ == "__main__":
     test_fused_sharded_mode()
     test_int32_tokenized_dataset()
-    test_roxxel_logger()
+    test_logger()

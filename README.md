@@ -24,7 +24,7 @@ By combining POSIX memory-mapped dataset sharding, high-performance async loggin
 * **NNX Topology Agnostic:** Restores state PyTrees natively using abstract template evaluation, decoupling model architecture updates from saved weights.
 * **Best-Loss Tracking:** Automatically monitors metric payloads and preserves the checkpoint achieving the lowest training loss (`best_mode='min'`).
 
-### 4. Asynchronous JAX-Aware Logging (`roxxel.RoxxelLogger` / `roxxel.XenronLogger`)
+### 4. Asynchronous JAX-Aware Logging (`roxxel.Logger`)
 * **Zero-Overhead Async Execution:** Spawns a background thread queue (`QueueListener`) to process writes to standard output and disk files asynchronously. Zero interference with critical GPU/TPU execution.
 * **Multi-Host TPU/GPU Pod Safety:** Automatically detects JAX rank and restricts logging to Rank 0, completely avoiding log corruption and process conflicts across multi-node pre-training clusters.
 * **Atomic Exception Traceback Capture:** Implements robust context-manager (`with` statement) logic. If a TPU OOMs, crashes, or is forcefully interrupted, the queue instantly flushes to the log file and records the exact stack trace before bubbling the error up.
@@ -60,7 +60,7 @@ from flax import nnx
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 from jax.experimental import mesh_utils
 
-from roxxel import Roxxel, XenronLogger
+from roxxel import Roxxel, Logger
 from roxxel.checkpoint import Checkpointer
 
 # --- 1. DATASET COMPILATION ---
@@ -89,8 +89,8 @@ total_train_steps = steps_per_epoch * EPOCHS
 
 # Initialize your async text logger inside an atomic Context Manager.
 # This guarantees that if a TPU crashes, OOMs, or is forcefully interrupted,
-# the thread queue will instantly drain completely to 'run_delta/xenron_system.log'
-with XenronLogger(log_dir="run_delta") as logger:
+# the thread queue will instantly drain completely to 'run_delta/roxxel_system.log'
+with Logger(log_dir="run_delta") as logger:
     logger.log_message("🚀 Initializing Distributed Pre-training Cluster...")
 
     # Initialize Flax NNX model tracking states using unified seed
@@ -183,7 +183,7 @@ Roxxel has been completely re-engineered to provide unified, non-blocking logs a
 | **Shard Management** | Users had to write manual file rotation loops, file naming schemes, and offset tables to handle large datasets. | **Zero-Config Sharding**: Specify a glob path (e.g., `wiki_*.rox`) and `max_shard_bytes`. Roxxel handles shard rotation and virtualizes them into one contiguous list view. |
 | **DL / JAX Streaming** | Required writing custom shuffling code, buffer management, and tedious boilerplate `jax.device_put` pipelines. | **Unified Causal Streaming**: The `dataset.stream()` API handles globally shuffled batching, O(1) step resumption, and automatic JAX sharded device placement with zero double-copy overhead. |
 | **Model Checkpointing** | Standard training loops required manual `pickle`, custom JSON savers, or synchronous JAX disk blocks. | **Asynchronous Orbax (`Checkpointer`)**: Flax NNX model weights/optimizers are serialized concurrently in background threads with auto-computed best-loss tracking. |
-| **Distributed System Logging** | Standard print statements caused GPU pipeline bottlenecks and multi-host log overlapping. | **Asynchronous Logger (`XenronLogger`/`RoxxelLogger`)**: Queue-based async writing offloaded to background threads with multi-host rank-zero filters and atomic exception traceback capturing. |
+| **Distributed System Logging** | Standard print statements caused GPU pipeline bottlenecks and multi-host log overlapping. | **Asynchronous Logger (`Logger`)**: Queue-based async writing offloaded to background threads with multi-host rank-zero filters and atomic exception traceback capturing. |
 
 ---
 

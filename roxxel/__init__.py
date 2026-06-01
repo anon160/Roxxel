@@ -1,4 +1,4 @@
 from roxxel.core import Roxxel
-from roxxel.logging import RoxxelLogger, XenronLogger
+from roxxel.logging import Logger
 
-__all__ = ["Roxxel", "RoxxelLogger", "XenronLogger"]
+__all__ = ["Roxxel", "Logger"]
