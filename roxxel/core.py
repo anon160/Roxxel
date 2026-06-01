@@ -4,6 +4,24 @@ import struct
 import bisect
 import numpy as np
 
+class RoxxelStream:
+    """
+    A thin wrapper around the Python generator returned by stream() 
+    that exposes the exact __len__ of the training steps in the stream.
+    """
+    def __init__(self, generator, total_steps):
+        self.generator = generator
+        self.total_steps = total_steps
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self.generator)
+
+    def __len__(self):
+        return self.total_steps
+
 class Roxxel:
     """
     A bare-bones, zero-RAM sharded block-based dataset manager.
@@ -408,6 +426,25 @@ class Roxxel:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
+    def estimate_steps(self, seq_len, batch_size=32):
+        """
+        Calculates the exact number of training steps per epoch for a given sequence length and batch size.
+        """
+        if not self._is_open:
+            self.open()
+        total_blocks = len(self)
+        if total_blocks == 0:
+            return 0
+        
+        compile_block_size = len(self[0])
+        native_dtype_name = getattr(self, "dtype", "uint8")
+        native_dtype = np.dtype(native_dtype_name)
+        element_size = native_dtype.itemsize
+        
+        total_bytes = total_blocks * compile_block_size
+        total_bytes_per_batch = batch_size * seq_len * element_size
+        return total_bytes // total_bytes_per_batch
+
     # =====================================================================
     # API 3: UNIFIED SEQUENCE STREAMING ENGINE (NUMPY / JAX)
     # =====================================================================
@@ -447,6 +484,10 @@ class Roxxel:
             global_indices = global_indices[consumed_blocks:]
             print(f"⏭️ Roxxel instantly jumped past {consumed_blocks} blocks. Resuming at step {start_step}.")
         
+        # Determine the total remaining steps for this stream
+        initial_steps = self.estimate_steps(seq_len, batch_size)
+        total_steps = max(0, initial_steps - start_step)
+
         # Detect JAX capability
         use_jax = False
         if mesh is not None or data_sharding is not None:
@@ -482,10 +523,6 @@ class Roxxel:
                 reservoir.extend(raw_slice.tobytes()[remainder_bytes:])
                 record_ptr += 1
             
-            # Recalculate total_steps based on strictly remaining bytes
-            remaining_total_bytes = len(global_indices[record_ptr:]) * compile_block_size + len(reservoir)
-            total_steps = remaining_total_bytes // total_bytes_per_batch
-            
             for _ in range(total_steps):
                 while len(reservoir) < total_bytes_per_batch:
                     if record_ptr >= len(global_indices):
@@ -508,4 +545,4 @@ class Roxxel:
                 else:
                     yield numpy_batch
 
-        return batch_generator()
+        return RoxxelStream(batch_generator(), total_steps)

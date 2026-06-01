@@ -35,8 +35,12 @@ def test_fused_sharded_mode():
         print(f"Virtualized Block Dataset Length: {len(dataset)}")
         assert len(dataset[0]) == 64  # Every record is exactly 64 bytes!
         
+        # Verify steps estimation helper
+        assert dataset.estimate_steps(seq_len=32, batch_size=2) == 4
+        
         # Test NumPy streaming of shape (batch_size=2, seq_len=32)
         stream = dataset.stream(seq_len=32, batch_size=2, seed=42)
+        assert len(stream) == 4  # Expose exact step count!
         
         first_batch = next(stream)
         print(f"Batch Shape: {first_batch.shape}, dtype: {first_batch.dtype}")
@@ -76,8 +80,12 @@ def test_int32_tokenized_dataset():
         assert dataset.dtype == "int32"
         assert len(dataset) == 4
         
+        # Verify steps estimation helper for multi-byte dtypes (2 * 8 * 4 = 64 bytes per batch)
+        assert dataset.estimate_steps(seq_len=8, batch_size=2) == 4
+        
         # Stream shape (batch_size=2, seq_len=8, dtype=int32)
         stream = dataset.stream(seq_len=8, batch_size=2, seed=42)
+        assert len(stream) == 4  # Expose exact step count!
         
         first_batch = next(stream)
         print(f"Batch Shape: {first_batch.shape}, dtype: {first_batch.dtype}")
