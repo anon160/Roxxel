@@ -52,6 +52,13 @@ class Logger:
             self.logger = logging.getLogger(logger_name)
             self.logger.setLevel(logging.INFO)
             self.logger.addHandler(self.queue_handler)
+            # Create a single unified history timeline file
+            self.metrics_csv_path = os.path.join(self.log_dir, f"{filename_prefix}_metrics.csv")
+        
+            # Seed headers if it's a completely fresh run
+            if not os.path.exists(self.metrics_csv_path):
+                with open(self.metrics_csv_path, "w", newline="", encoding="utf-8") as f:
+                    f.write("step,loss,perplexity\n")
 
     def __enter__(self):
         """Returns the logger instance itself when entering the 'with' block."""
@@ -76,6 +83,13 @@ class Logger:
         """Passes a string to the queue. Takes 0ms on your main training loop thread."""
         if self.is_rank_zero:
             self.logger.log(level, message)
+
+    def log_metrics_summary(self, step: int, loss: float, ppl: float):
+        """Appends flat scalar values directly to a persistent CSV timeline file."""
+        if self.is_rank_zero:
+            # Simple, direct text append—takes sub-microseconds and never gets pruned!
+            with open(self.metrics_csv_path, "a", newline="", encoding="utf-8") as f:
+                f.write(f"{step},{loss:.5f},{ppl:.3f}\n")
 
     def close(self):
         """Forces the background asynchronous write threads to complete and lock files."""

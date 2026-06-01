@@ -107,15 +107,23 @@ def test_logger():
     
     temp_dir = tempfile.mkdtemp()
     try:
-        # Test normal logging
+        # Test normal logging and metrics
         with Logger(log_dir=temp_dir, filename_prefix="test_log") as logger:
             logger.log_message("Hello from the test!")
+            logger.log_metrics_summary(step=10, loss=1.23456, ppl=3.456)
         
         log_file = os.path.join(temp_dir, "test_log_system.log")
         assert os.path.exists(log_file)
         with open(log_file, "r") as f:
             content = f.read()
             assert "Hello from the test!" in content
+
+        csv_file = os.path.join(temp_dir, "test_log_metrics.csv")
+        assert os.path.exists(csv_file)
+        with open(csv_file, "r") as f:
+            lines = f.readlines()
+            assert lines[0] == "step,loss,perplexity\n"
+            assert lines[1] == "10,1.23456,3.456\n"
             
         # Test exception tracking and bubbling
         try:
