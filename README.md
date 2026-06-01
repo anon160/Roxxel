@@ -165,7 +165,7 @@ with Logger(log_dir="run_delta") as logger:
                 # Save asynchronously on a schedule (Orbax tracks the best model automatically!)
                 if curr_step % 100 == 0:
                     logger.log_message(f"Step {curr_step} | Loss: {loss:.4f}")
-                    logger.log_metrics_summary(step=curr_step, loss=float(loss), ppl=float(jnp.exp(loss)))
+                    logger.log_metrics_summary(step=curr_step, metrics={"loss": float(loss), "perplexity": float(jnp.exp(loss))})
                     checkpointer.save(curr_step, metrics_dict={"loss": loss})
                     
         start_step = 0  # Reset offset after completing epoch 0

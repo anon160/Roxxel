@@ -110,7 +110,7 @@ def test_logger():
         # Test normal logging and metrics
         with Logger(log_dir=temp_dir, filename_prefix="test_log") as logger:
             logger.log_message("Hello from the test!")
-            logger.log_metrics_summary(step=10, loss=1.23456, ppl=3.456)
+            logger.log_metrics_summary(step=10, metrics={"loss": 1.23456, "perplexity": 3.456})
         
         log_file = os.path.join(temp_dir, "test_log_system.log")
         assert os.path.exists(log_file)
@@ -123,7 +123,7 @@ def test_logger():
         with open(csv_file, "r") as f:
             lines = f.readlines()
             assert lines[0] == "step,loss,perplexity\n"
-            assert lines[1] == "10,1.23456,3.456\n"
+            assert lines[1] == "10,1.23456,3.45600\n"
             
         # Test exception tracking and bubbling
         try:
