@@ -1,14 +1,14 @@
 # Roxxel 🚀 
 
-**Zero-RAM, JAX-Centric Dataloading, Streaming, and Asynchronous Checkpointing Toolkit**
+**Zero-RAM, JAX-Centric Dataloading, Streaming, and Asynchronous Checkpointing & Logging Toolkit**
 
 Roxxel is an ultra-lightweight, zero-bloat, high-performance toolkit designed specifically for large-scale JAX & Flax NNX deep learning training pipelines (such as State Space Models, Transformers, and SSMs like Xenron). 
 
-By combining POSIX memory-mapped dataset sharding with Flax NNX topology-agnostic asynchronous checkpointing, Roxxel provides a unified, framework-native pipeline that does away with heavy, over-engineered training frameworks.
+By combining POSIX memory-mapped dataset sharding, high-performance async logging, and Flax NNX topology-agnostic asynchronous checkpointing, Roxxel provides a unified, framework-native pipeline that does away with heavy, over-engineered training frameworks.
 
 ---
 
-## 🌟 The Three Pillars of Roxxel
+## 🌟 The Four Pillars of Roxxel
 
 ### 1. Zero-RAM Sharded Block Dataloader (`roxxel.Roxxel`)
 * **OS-Level Memory Mapping:** Maps multi-terabyte datasets directly into virtual memory via the operating system's kernel page cache using `numpy.memmap`. Consumes **exactly 0 bytes of Python RAM** for storage.
@@ -24,13 +24,18 @@ By combining POSIX memory-mapped dataset sharding with Flax NNX topology-agnosti
 * **NNX Topology Agnostic:** Restores state PyTrees natively using abstract template evaluation, decoupling model architecture updates from saved weights.
 * **Best-Loss Tracking:** Automatically monitors metric payloads and preserves the checkpoint achieving the lowest training loss (`best_mode='min'`).
 
+### 4. Asynchronous JAX-Aware Logging (`roxxel.RoxxelLogger` / `roxxel.XenronLogger`)
+* **Zero-Overhead Async Execution:** Spawns a background thread queue (`QueueListener`) to process writes to standard output and disk files asynchronously. Zero interference with critical GPU/TPU execution.
+* **Multi-Host TPU/GPU Pod Safety:** Automatically detects JAX rank and restricts logging to Rank 0, completely avoiding log corruption and process conflicts across multi-node pre-training clusters.
+* **Atomic Exception Traceback Capture:** Implements robust context-manager (`with` statement) logic. If a TPU OOMs, crashes, or is forcefully interrupted, the queue instantly flushes to the log file and records the exact stack trace before bubbling the error up.
+
 ---
 
 ## 📦 Installation
 
 Roxxel can be installed via `pip` directly from PyPI.
 
-To install the core dataloader only:
+To install the core dataloader and async logging engine only:
 ```bash
 pip install roxxel
 ```
@@ -44,7 +49,7 @@ pip install roxxel[checkpoint]
 
 ## 🚀 End-to-End JAX/Flax NNX Training Cookbook
 
-Here is a complete, real-world example showing how Roxxel integrates data compilation, streaming, JAX Named Sharding, and Orbax NNX checkpointing into a single, cohesive training pipeline:
+Here is a complete, real-world example showing how Roxxel integrates data compilation, sharded streaming, asynchronous system logging, JAX Named Sharding, and Orbax NNX checkpointing into a single, highly optimized training pipeline:
 
 ```python
 import os
@@ -55,7 +60,7 @@ from flax import nnx
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 from jax.experimental import mesh_utils
 
-from roxxel import Roxxel
+from roxxel import Roxxel, XenronLogger
 from roxxel.checkpoint import Checkpointer
 
 # --- 1. DATASET COMPILATION ---
@@ -69,15 +74,7 @@ rox = Roxxel("./wiki_*.rox")
 rox.write(token_generator(), block_size=4096, max_shard_bytes=1024**3, separator=None)
 
 
-# --- 2. MODEL, OPTIMIZER & SCHEDULER INITIALIZATION ---
-class SimpleSSM(nnx.Module):
-    def __init__(self, rngs: nnx.Rngs):
-        self.embed = nnx.Embed(10000, 256, rngs=rngs)
-        self.linear = nnx.Linear(256, 10000, rngs=rngs)
-        
-    def __call__(self, x):
-        return self.linear(self.embed(x))
-
+# --- 2. HIGH-PERFORMANCE TRAINING HARNESS ENVIRONMENT ---
 GLOBAL_SEED = 42
 BATCH_SIZE = 32
 SEQ_LEN = 1024
@@ -90,80 +87,94 @@ with Roxxel(filepath="./wiki_*.rox") as init_ds:
 
 total_train_steps = steps_per_epoch * EPOCHS
 
-# Setup Optax learning rate schedule
-scheduler = optax.warmup_cosine_decay_schedule(
-    init_value=1e-7,
-    peak_value=LR,
-    warmup_steps=int(total_train_steps * 0.05),
-    decay_steps=total_train_steps
-)
-tx = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(scheduler))
+# Initialize your async text logger inside an atomic Context Manager.
+# This guarantees that if a TPU crashes, OOMs, or is forcefully interrupted,
+# the thread queue will instantly drain completely to 'run_delta/xenron_system.log'
+with XenronLogger(log_dir="run_delta") as logger:
+    logger.log_message("🚀 Initializing Distributed Pre-training Cluster...")
 
-# Initialize JAX NNX state
-rngs = nnx.Rngs(GLOBAL_SEED)
-model = SimpleSSM(rngs)
-optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
-
-
-# --- 3. ORBAX CHECKPOINT RESTORATION ---
-# Instantiate Checkpointer (saves parameters and optimizer natively)
-checkpointer = Checkpointer(checkpoint_path="./checkpoints", model=model, optimizer=optimizer)
-start_step = checkpointer.restore()
-
-
-# --- 4. SHARDED JAX STREAMING & TRAINING LOOP ---
-# Create distributed hardware sharding paths for Multi-Host TPU/GPU Pod scaling
-devices = jax.devices()
-mesh = Mesh(mesh_utils.create_device_mesh((len(devices),)), axis_names=('data',))
-data_sharding = NamedSharding(mesh, P('data', None))
-
-@nnx.jit
-def train_step(model, optimizer, batch):
-    def loss_fn(model):
-        logits = model(batch[:, :-1])
-        targets = batch[:, 1:]
-        loss = optax.softmax_cross_entropy_with_integer_labels(logits, targets).mean()
-        return loss
+    # Initialize Flax NNX model tracking states using unified seed
+    rngs = nnx.Rngs(GLOBAL_SEED)
     
-    loss, grads = nnx.value_and_grad(loss_fn)(model)
-    optimizer.update(grads)
-    return loss
-
-for epoch in range(EPOCHS):
-    print(f"⏳ Starting Training Epoch {epoch + 1}/{EPOCHS}...")
-    
-    with Roxxel(filepath="./wiki_*.rox") as dataset:
-        # Load hardware-sharded JAX device arrays instantly
-        # (Epoch 0 resume fast-forwards instantly to start_step in O(1) time!)
-        loader_stream = dataset.stream(
-            seq_len=SEQ_LEN,
-            batch_size=BATCH_SIZE,
-            seed=GLOBAL_SEED,
-            start_step=start_step if epoch == 0 else 0,
-            mesh=mesh,
-            data_sharding=data_sharding
-        )
-        
-        # RoxxelStream supports len() natively for progress bars and scheduler checks!
-        print(f"Loaded {len(loader_stream)} steps remaining in this epoch.")
-        
-        for step_idx, batch in enumerate(loader_stream):
-            loss = train_step(model, optimizer, batch)
-            curr_step = start_step + step_idx if epoch == 0 else step_idx
+    class SimpleSSM(nnx.Module):
+        def __init__(self, rngs: nnx.Rngs):
+            self.embed = nnx.Embed(10000, 256, rngs=rngs)
+            self.linear = nnx.Linear(256, 10000, rngs=rngs)
             
-            # Save asynchronously on a schedule (Orbax tracks the best model automatically!)
-            if curr_step % 100 == 0:
-                print(f"Step {curr_step} | Loss: {loss:.4f}")
-                checkpointer.save(curr_step, metrics_dict={"loss": loss})
+        def __call__(self, x):
+            return self.linear(self.embed(x))
+            
+    model = SimpleSSM(rngs)
+    
+    # Setup Optax learning rate schedule
+    scheduler = optax.warmup_cosine_decay_schedule(
+        init_value=1e-7,
+        peak_value=LR,
+        warmup_steps=int(total_train_steps * 0.05),
+        decay_steps=total_train_steps
+    )
+    tx = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(scheduler))
+    optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
+
+    # --- 3. ORBAX CHECKPOINT RESTORATION ---
+    # Instantiate Checkpointer (saves parameters and optimizer natively)
+    checkpointer = Checkpointer(checkpoint_path="./checkpoints", model=model, optimizer=optimizer)
+    start_step = checkpointer.restore()
+    logger.log_message(f"🔄 Checkpointer restored. Starting from step: {start_step}")
+
+    # --- 4. SHARDED JAX STREAMING & TRAINING LOOP ---
+    # Create distributed hardware sharding paths for Multi-Host TPU/GPU Pod scaling
+    devices = jax.devices()
+    mesh = Mesh(mesh_utils.create_device_mesh((len(devices),)), axis_names=('data',))
+    data_sharding = NamedSharding(mesh, P('data', None))
+
+    @nnx.jit
+    def train_step(model, optimizer, batch):
+        def loss_fn(model):
+            logits = model(batch[:, :-1])
+            targets = batch[:, 1:]
+            loss = optax.softmax_cross_entropy_with_integer_labels(logits, targets).mean()
+            return loss
+        
+        loss, grads = nnx.value_and_grad(loss_fn)(model)
+        optimizer.update(grads)
+        return loss
+
+    for epoch in range(EPOCHS):
+        logger.log_message(f"⏳ Starting Training Epoch {epoch + 1}/{EPOCHS}...")
+        
+        with Roxxel(filepath="./wiki_*.rox") as dataset:
+            # Load hardware-sharded JAX device arrays instantly
+            # (Epoch 0 resume fast-forwards instantly to start_step in O(1) time!)
+            loader_stream = dataset.stream(
+                seq_len=SEQ_LEN,
+                batch_size=BATCH_SIZE,
+                seed=GLOBAL_SEED,
+                start_step=start_step if epoch == 0 else 0,
+                mesh=mesh,
+                data_sharding=data_sharding
+            )
+            
+            # RoxxelStream supports len() natively for progress bars and scheduler checks!
+            logger.log_message(f"Loaded {len(loader_stream)} steps remaining in this epoch.")
+            
+            for step_idx, batch in enumerate(loader_stream):
+                loss = train_step(model, optimizer, batch)
+                curr_step = start_step + step_idx if epoch == 0 else step_idx
                 
-    start_step = 0  # Reset offset after completing epoch 0
+                # Save asynchronously on a schedule (Orbax tracks the best model automatically!)
+                if curr_step % 100 == 0:
+                    logger.log_message(f"Step {curr_step} | Loss: {loss:.4f}")
+                    checkpointer.save(curr_step, metrics_dict={"loss": loss})
+                    
+        start_step = 0  # Reset offset after completing epoch 0
 ```
 
 ---
 
 ## 🔄 API Evolution: The Old Way vs. The New Fused Way
 
-Roxxel has been completely overhauled in `v0.5.x` to fuse data compilation, sharding, and deep learning streaming into a single, JAX-native high-performance engine.
+Roxxel has been completely re-engineered to provide unified, non-blocking logs alongside zero-copy sharding, memory mapping, and background Orbax checkpointing for distributed deep learning.
 
 | Feature | The Old Way (v0.1.0) | The New Fused Way (v0.5.x) |
 | :--- | :--- | :--- |
@@ -172,6 +183,7 @@ Roxxel has been completely overhauled in `v0.5.x` to fuse data compilation, shar
 | **Shard Management** | Users had to write manual file rotation loops, file naming schemes, and offset tables to handle large datasets. | **Zero-Config Sharding**: Specify a glob path (e.g., `wiki_*.rox`) and `max_shard_bytes`. Roxxel handles shard rotation and virtualizes them into one contiguous list view. |
 | **DL / JAX Streaming** | Required writing custom shuffling code, buffer management, and tedious boilerplate `jax.device_put` pipelines. | **Unified Causal Streaming**: The `dataset.stream()` API handles globally shuffled batching, O(1) step resumption, and automatic JAX sharded device placement with zero double-copy overhead. |
 | **Model Checkpointing** | Standard training loops required manual `pickle`, custom JSON savers, or synchronous JAX disk blocks. | **Asynchronous Orbax (`Checkpointer`)**: Flax NNX model weights/optimizers are serialized concurrently in background threads with auto-computed best-loss tracking. |
+| **Distributed System Logging** | Standard print statements caused GPU pipeline bottlenecks and multi-host log overlapping. | **Asynchronous Logger (`XenronLogger`/`RoxxelLogger`)**: Queue-based async writing offloaded to background threads with multi-host rank-zero filters and atomic exception traceback capturing. |
 
 ---
 
