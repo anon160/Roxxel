@@ -1,163 +1,177 @@
-# Roxxel 🚀
+# Roxxel 🚀 
 
-**Zero-RAM, Multi-Modal, Sharded Binary Dataset Manager**
+**Zero-RAM, JAX-Centric Dataloading, Streaming, and Asynchronous Checkpointing Toolkit**
 
-Roxxel is an ultra-lightweight, minimal-dependency, binary dataset format and reader designed for high-performance deep learning pipelines. 
+Roxxel is an ultra-lightweight, zero-bloat, high-performance toolkit designed specifically for large-scale JAX & Flax NNX deep learning training pipelines (such as State Space Models, Transformers, and SSMs like Xenron). 
 
-By implementing the standard Python sequence protocol over native `numpy.memmap` views, Roxxel virtualizes massive, multi-sharded, variable-length datasets on-disk as a simple, continuous in-memory list.
-
----
-
-## 💡 Motivation
-
-Mainstream deep learning data loaders—such as **PyTorch's `DataLoader`**, **Google's `Grain`**, and **TensorFlow's `tf.data`**—attempt to handle every aspect of the data pipeline (I/O, caching, multiprocessing, shuffling, collation, and transformations) in a single, massive monolithic system. This inevitably leads to severe operational friction:
-
-* **PyTorch DataLoader**: Relying on multiple workers (`num_workers > 0`) spawns child processes that trigger Python's `fork` mechanism. This frequently results in massive memory leaks due to copy-on-write page sharing bugs in Python's GIL. Furthermore, debugging opaque subprocess deadlocks and socket/IPC exhaustion is incredibly frustrating.
-* **Google Grain**: While powerful, it introduces a heavyweight dependency footprint and complex pipeline building abstractions that are difficult to customize or run outside of JAX-specific training pipelines.
-* **TensorFlow tf.data**: Building robust tf.data pipelines is highly complex. Additionally, it forces you to use the opaque `TFRecord` binary format, which cannot be easily inspected or read without pulling in the massive, multi-gigabyte TensorFlow library as a dependency.
-
-### The Roxxel Philosophy
-Roxxel shifts the architectural boundary by practicing the **Unix philosophy of doing one thing and doing it well**. It handles only the hardest, most critical parts of storage—**safe contiguous file packing, zero-RAM memory mapping, and O(1) seek indexing**—and leaves all batching, threading, and transformations to plain, standard Python and NumPy code.
+By combining POSIX memory-mapped dataset sharding with Flax NNX topology-agnostic asynchronous checkpointing, Roxxel provides a unified, framework-native pipeline that does away with heavy, over-engineered training frameworks.
 
 ---
 
-## 🌟 Unique Benefits of Roxxel
+## 🌟 The Three Pillars of Roxxel
 
-1. **Zero-RAM Overhead**: Roxxel maps your dataset directly into virtual memory via the operating system's kernel page cache using `numpy.memmap`. Even for multi-terabyte datasets, it consumes **exactly 0 bytes of Python RAM** for the data.
-2. **100% Framework Agnostic**: Because Roxxel is built purely on Python standard libraries and NumPy, it is entirely decoupled from any ML framework. You can use the exact same Roxxel dataset across **PyTorch, JAX, TensorFlow, or pure CPU environments** with zero code changes.
-3. **No Multiprocessing Deadlocks**: Because reading from memory maps is natively thread-safe and extremely fast, you can implement high-performance, asynchronous loading using simple Python threads (`threading.Thread`) or thread pools. You never have to worry about subprocess IPC bottlenecks or fork-related deadlocks.
-4. **Modality-Agnostic Variable-Length Records**: Unlike rigid formats, Roxxel accepts arbitrary variable-length binary payloads contiguously. You can store JPEGs, MP4 clips, text token arrays, or audio samples in a single, unified structure with zero padding waste.
-5. **Clean Sharded Portability**: Roxxel automatically splits massive datasets into sequentially numbered shards during writes. During reads, it seamlessly virtualizes them into a single continuous sequence using fast binary search boundaries. Shards are easy to distribute, copy, and stream over networks.
+### 1. Zero-RAM Sharded Block Dataloader (`roxxel.Roxxel`)
+* **OS-Level Memory Mapping:** Maps multi-terabyte datasets directly into virtual memory via the operating system's kernel page cache using `numpy.memmap`. Consumes **exactly 0 bytes of Python RAM** for storage.
+* **Dynamic Dtype Auto-Detection:** Automatically detects the data representation (e.g. `int32` token IDs, `float32` arrays, or `uint8` bytes) on compilation and stores it in a backward-compatible 32-byte footer (`ROXXEL02` format).
+* **Precise O(1) Fast-Forwarding:** Instantly resumes streaming from any checkpointed step in under 1 millisecond using exact byte offsets—completely skipping the need to execute dummy fast-forward loops.
+
+### 2. JAX-Native Streaming (`dataset.stream()`)
+* **Zero Double-Copy Overhead:** Automatically chunks, shuffles, and places batches directly onto JAX device layouts (`jax.device_put`) using your Named Sharding Mesh. Avoids JAX default-device materialization bottlenecks and GPU/TPU OOM spikes.
+* **Dynamic Step Calculation:** The stream returns a custom `RoxxelStream` object which natively exposes `len(stream)`—enabling you to instantly align learning rate schedules and progress bars.
+
+### 3. Asynchronous Model Checkpointing (`roxxel.checkpoint.Checkpointer`)
+* **Zero-Latency Async Storage:** Offloads state serialization to background threads using Orbax Checkpoint Manager, allowing your GPU/TPU accelerators to keep training without waiting for disk writes.
+* **NNX Topology Agnostic:** Restores state PyTrees natively using abstract template evaluation, decoupling model architecture updates from saved weights.
+* **Best-Loss Tracking:** Automatically monitors metric payloads and preserves the checkpoint achieving the lowest training loss (`best_mode='min'`).
 
 ---
-
-## 🛠️ File Format Architecture
-
-To prevent **header contamination** (where inline metadata blocks corrupt flat memory maps), Roxxel writes your entire dataset into a single contiguous binary file with a trailing index table:
-
-```
-+-------------------------------------------------------------+
-|                                                             |
-| 1. RAW CONTIGUOUS PAYLOAD DATA SECTION                      |
-|    (No headers, no prefixes, completely clean bytes)        |
-|                                                             |
-+-------------------------------------------------------------+
-|                                                             |
-| 2. TRAILING INDEX TABLE SECTION                             |
-|    (Flat array of uint64 offsets pointing to record ends)   |
-|                                                             |
-+-------------------------------------------------------------+
-| 3. FOOTER (Exactly 24 bytes)                                |
-|    [Total Records (8B)] [Raw Data Size (8B)] [MAGIC (8B)]  |
-+-------------------------------------------------------------+
-```
-
-Because the raw data section is completely uninterrupted, you can interpret the entire archive as a single contiguous array in one line (e.g. for LLM token pre-training) or resolve individual records in $O(1)$ constant time.
 
 ## 📦 Installation
 
-Roxxel can be installed via `pip` directly from PyPI:
+Roxxel can be installed via `pip` directly from PyPI.
 
+To install the core dataloader only:
 ```bash
 pip install roxxel
+```
+
+To install the JAX-native asynchronous checkpointing extensions:
+```bash
+pip install roxxel[checkpoint]
+```
+
+---
+
+## 🚀 End-to-End JAX/Flax NNX Training Cookbook
+
+Here is a complete, real-world example showing how Roxxel integrates data compilation, streaming, JAX Named Sharding, and Orbax NNX checkpointing into a single, cohesive training pipeline:
+
+```python
+import os
+import jax
+import jax.numpy as jnp
+import optax
+from flax import nnx
+from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+from jax.experimental import mesh_utils
+
+from roxxel import Roxxel
+from roxxel.checkpoint import Checkpointer
+
+# --- 1. DATASET COMPILATION ---
+# Let's compile tokenized integer sequences into 4KB uniform blocks
+def token_generator():
+    for i in range(1000):
+        # yields numpy arrays of tokenized int32 IDs
+        yield jnp.arange(128, dtype=jnp.int32)
+
+rox = Roxxel("./wiki_*.rox")
+rox.write(token_generator(), block_size=4096, max_shard_bytes=1024**3, separator=None)
+
+
+# --- 2. MODEL, OPTIMIZER & SCHEDULER INITIALIZATION ---
+class SimpleSSM(nnx.Module):
+    def __init__(self, rngs: nnx.Rngs):
+        self.embed = nnx.Embed(10000, 256, rngs=rngs)
+        self.linear = nnx.Linear(256, 10000, rngs=rngs)
+        
+    def __call__(self, x):
+        return self.linear(self.embed(x))
+
+GLOBAL_SEED = 42
+BATCH_SIZE = 32
+SEQ_LEN = 1024
+EPOCHS = 3
+LR = 3e-4
+
+# Open the dataset once to get the exact steps per epoch to define the scheduler
+with Roxxel(filepath="./wiki_*.rox") as init_ds:
+    steps_per_epoch = init_ds.estimate_steps(seq_len=SEQ_LEN, batch_size=BATCH_SIZE)
+
+total_train_steps = steps_per_epoch * EPOCHS
+
+# Setup Optax learning rate schedule
+scheduler = optax.warmup_cosine_decay_schedule(
+    init_value=1e-7,
+    peak_value=LR,
+    warmup_steps=int(total_train_steps * 0.05),
+    decay_steps=total_train_steps
+)
+tx = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(scheduler))
+
+# Initialize JAX NNX state
+rngs = nnx.Rngs(GLOBAL_SEED)
+model = SimpleSSM(rngs)
+optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
+
+
+# --- 3. ORBAX CHECKPOINT RESTORATION ---
+# Instantiate Checkpointer (saves parameters and optimizer natively)
+checkpointer = Checkpointer(checkpoint_path="./checkpoints", model=model, optimizer=optimizer)
+start_step = checkpointer.restore()
+
+
+# --- 4. SHARDED JAX STREAMING & TRAINING LOOP ---
+# Create distributed hardware sharding paths for Multi-Host TPU/GPU Pod scaling
+devices = jax.devices()
+mesh = Mesh(mesh_utils.create_device_mesh((len(devices),)), axis_names=('data',))
+data_sharding = NamedSharding(mesh, P('data', None))
+
+@nnx.jit
+def train_step(model, optimizer, batch):
+    def loss_fn(model):
+        logits = model(batch[:, :-1])
+        targets = batch[:, 1:]
+        loss = optax.softmax_cross_entropy_with_integer_labels(logits, targets).mean()
+        return loss
+    
+    loss, grads = nnx.value_and_grad(loss_fn)(model)
+    optimizer.update(grads)
+    return loss
+
+for epoch in range(EPOCHS):
+    print(f"⏳ Starting Training Epoch {epoch + 1}/{EPOCHS}...")
+    
+    with Roxxel(filepath="./wiki_*.rox") as dataset:
+        # Load hardware-sharded JAX device arrays instantly
+        # (Epoch 0 resume fast-forwards instantly to start_step in O(1) time!)
+        loader_stream = dataset.stream(
+            seq_len=SEQ_LEN,
+            batch_size=BATCH_SIZE,
+            seed=GLOBAL_SEED,
+            start_step=start_step if epoch == 0 else 0,
+            mesh=mesh,
+            data_sharding=data_sharding
+        )
+        
+        # RoxxelStream supports len() natively for progress bars and scheduler checks!
+        print(f"Loaded {len(loader_stream)} steps remaining in this epoch.")
+        
+        for step_idx, batch in enumerate(loader_stream):
+            loss = train_step(model, optimizer, batch)
+            curr_step = start_step + step_idx if epoch == 0 else step_idx
+            
+            # Save asynchronously on a schedule (Orbax tracks the best model automatically!)
+            if curr_step % 100 == 0:
+                print(f"Step {curr_step} | Loss: {loss:.4f}")
+                checkpointer.save(curr_step, metrics_dict={"loss": loss})
+                
+    start_step = 0  # Reset offset after completing epoch 0
 ```
 
 ---
 
 ## 🔄 API Evolution: The Old Way vs. The New Fused Way
 
-Roxxel has been completely overhauled in `v0.3.0` to fuse data compilation, sharding, and deep learning streaming into a single, cohesive high-performance engine.
+Roxxel has been completely overhauled in `v0.5.x` to fuse data compilation, sharding, and deep learning streaming into a single, JAX-native high-performance engine.
 
-| Feature | The Old Way (v0.1.0) | The New Fused Way (v0.3.0+) |
+| Feature | The Old Way (v0.1.0) | The New Fused Way (v0.5.x) |
 | :--- | :--- | :--- |
-| **Block Compilation** | Required wrapping low-level writers in a separate external compiler class (`RoxxelBlockCompiler`) to manually group and pad inputs. | **100% Fused & Native**: The `rox.write()` API consumes arbitrary string/byte generators, automatically chunks them, handles padding, and writes to disk in one call. |
+| **Block Compilation** | Required wrapping writers in a separate external compiler class (`RoxxelBlockCompiler`) to manually group and pad inputs. | **100% Fused & Native**: The `rox.write()` API consumes arbitrary string/byte/numpy generators, automatically chunks them, handles padding, and writes to disk in one call. |
+| **Data Types on Disk** | Restricted entirely to byte-level representations (`uint8`). Multi-byte dtypes (like tokenized `int32` IDs) were corrupted/split. | **Dynamic Dtype Metadata**: Automatically detects the datatype (e.g. `int32`, `float32`) on write, stores it in a 32B footer (`ROXXEL02`), and decodes perfectly on read. |
 | **Shard Management** | Users had to write manual file rotation loops, file naming schemes, and offset tables to handle large datasets. | **Zero-Config Sharding**: Specify a glob path (e.g., `wiki_*.rox`) and `max_shard_bytes`. Roxxel handles shard rotation and virtualizes them into one contiguous list view. |
 | **DL / JAX Streaming** | Required writing custom shuffling code, buffer management, and tedious boilerplate `jax.device_put` pipelines. | **Unified Causal Streaming**: The `dataset.stream()` API handles globally shuffled batching, O(1) step resumption, and automatic JAX sharded device placement with zero double-copy overhead. |
-
----
-
-## 🚀 Getting Started
-
-### 1. Compiling raw data into uniform blocks
-Pass an iterable stream of strings or raw bytes directly into the `write()` API. Roxxel will automatically group them into strictly uniform blocks (e.g., 4096-byte blocks) and write them to disk.
-
-```python
-from roxxel import Roxxel
-
-# Generator yielding text documents of variable lengths
-def text_generator():
-    yield "The quick brown fox jumps over the lazy dog."
-    yield "Generative AI and SSMs like Xenron are transforming sequences."
-    yield "Roxxel delivers zero-RAM, highly efficient data loading."
-
-# Instantiate and write (automatically shards at 1GB, blocks of 4KB)
-rox = Roxxel("./wiki_*.rox")
-rox.write(
-    data_generator=text_generator(),
-    block_size=4096,
-    max_shard_bytes=1024**3,
-    separator=b"\xff"
-)
-```
-
-### 2. High-Performance Deterministic Streaming (NumPy & JAX)
-Opening the dataset and streaming globally shuffled, JAX-sharded batches takes just a few lines. The `stream()` API handles circular prefetch buffering and PCIe hardware transfers asynchronously in the background:
-
-```python
-import jax
-from roxxel import Roxxel
-
-# 1. Open the virtualized multi-sharded dataset
-with Roxxel("./wiki_*.rox") as dataset:
-    # 2. Yield globally shuffled JAX-sharded device arrays automatically!
-    # If JAX is installed, it outputs JAX arrays. Otherwise, standard NumPy arrays.
-    dataloader = dataset.stream(
-        seq_len=1024,
-        batch_size=32,
-        seed=42,
-        start_step=0  # Supports instant O(1) checkpoint fast-forwarding!
-    )
-    
-    for batch in dataloader:
-        # batch is a JAX device-put array of shape (32, 1024) ready for TPU/GPU!
-        outputs = train_step(state, batch)
-```
-
----
-
-## 🍳 Cookbooks
-
-### A. Flat Token Reshaping (e.g. LLM Training)
-If you want to bypass sequence boundaries entirely and treat the whole sharded database as a single, contiguous token stream:
-
-```python
-with Roxxel("./wiki_*.rox") as dataset:
-    # Get a 1D memory-mapped view of the entire dataset across all shards
-    # (Since len(dataset[0]) is uniform, this represents one solid contiguous sequence)
-    flat_tokens = dataset.raw_data.view(np.uint16)
-    
-    # Reshape and train dynamically in NumPy
-    total_sequences = len(flat_tokens) // 2048
-    reshaped_dataset = flat_tokens[:total_sequences * 2048].reshape(total_sequences, 2048)
-```
-
-### B. Instant O(1) Checkpoint Resuming
-To save training progress, simply checkpoint your current `step`. Resuming takes less than 1 millisecond as `Roxxel` instantly jumps past the consumed blocks using basic index arithmetic—completely skipping the need to execute dummy fast-forward loops:
-
-```python
-# During save:
-step = current_step  # Save this integer in your checkpoint manager
-
-# During restore:
-with Roxxel("./wiki_*.rox") as dataset:
-    # Instantly fast-forward and resume streaming from step 4500
-    dataloader = dataset.stream(
-        seq_len=1024,
-        batch_size=32,
-        seed=42,
-        start_step=4500
-    )
-```
+| **Model Checkpointing** | Standard training loops required manual `pickle`, custom JSON savers, or synchronous JAX disk blocks. | **Asynchronous Orbax (`Checkpointer`)**: Flax NNX model weights/optimizers are serialized concurrently in background threads with auto-computed best-loss tracking. |
 
 ---
 
