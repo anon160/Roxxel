@@ -147,29 +147,34 @@ class Roxxel:
                 current_shard_path = last_shard_path
                 shard_idx -= 1
                 
-                with open(current_shard_path, "rb") as f:
-                    if last_shard_size >= 32:
-                        f.seek(last_shard_size - 32)
-                        footer_block = f.read(32)
-                        total_records, raw_data_size, dtype_bytes, file_signature = struct.unpack("<qq8s8s", footer_block)
-                        if file_signature != b"ROXXEL02":
+                if last_shard_size >= 24:
+                    with open(current_shard_path, "rb") as f:
+                        if last_shard_size >= 32:
+                            f.seek(last_shard_size - 32)
+                            footer_block = f.read(32)
+                            total_records, raw_data_size, dtype_bytes, file_signature = struct.unpack("<qq8s8s", footer_block)
+                            if file_signature != b"ROXXEL02":
+                                f.seek(last_shard_size - 24)
+                                footer_block = f.read(24)
+                                total_records, raw_data_size, file_signature = struct.unpack("<qq8s", footer_block)
+                        else:
                             f.seek(last_shard_size - 24)
                             footer_block = f.read(24)
                             total_records, raw_data_size, file_signature = struct.unpack("<qq8s", footer_block)
-                    else:
-                        f.seek(last_shard_size - 24)
-                        footer_block = f.read(24)
-                        total_records, raw_data_size, file_signature = struct.unpack("<qq8s", footer_block)
 
-                if file_signature in (self.MAGIC_SIGNATURE, b"ROXXEL02"):
-                    with open(current_shard_path, "rb") as f:
-                        f.seek(raw_data_size)
-                        end_offsets = np.fromfile(f, dtype="<i8", count=total_records).tolist()
-                    
-                    with open(current_shard_path, "r+b") as f:
-                        f.truncate(raw_data_size)
+                    if file_signature in (self.MAGIC_SIGNATURE, b"ROXXEL02"):
+                        with open(current_shard_path, "rb") as f:
+                            f.seek(raw_data_size)
+                            end_offsets = np.fromfile(f, dtype="<i8", count=total_records).tolist()
+                        
+                        with open(current_shard_path, "r+b") as f:
+                            f.truncate(raw_data_size)
+                    else:
+                        current_shard_path = f"{base_name}_{shard_idx:04d}.rox"
+                        end_offsets = []
+                        raw_data_size = 0
                 else:
-                    current_shard_path = f"{base_name}_{shard_idx:04d}.rox"
+                    # File exists but is too small to have a valid footer (< 24 bytes), treat as empty/fresh
                     end_offsets = []
                     raw_data_size = 0
             else:

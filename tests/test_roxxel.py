@@ -145,7 +145,32 @@ def test_logger():
         shutil.rmtree(temp_dir)
     print("Logger tests passed successfully!\n")
 
+def test_incomplete_shard_recovery():
+    print("--- Testing Incomplete Shard Recovery (Errno 22 Fix) ---")
+    base_name = "./test_incomplete"
+    clean_shards(base_name)
+    
+    # 1. Create a corrupted/empty shard file of 5 bytes (size < 24)
+    corrupted_shard = f"{base_name}_0000.rox"
+    with open(corrupted_shard, "wb") as f:
+        f.write(b"hello")
+        
+    # 2. Try writing to this sharded path. Roxxel should successfully reuse/overwrite the file 
+    # without raising OSError [Errno 22] Invalid argument.
+    # Instantiate with the base path, not the wildcard!
+    rox = Roxxel(filepath=f"{base_name}.rox")
+    rox.write(["Test sentence to overwrite the corrupt file."], block_size=64, max_shard_bytes=100, separator=None)
+    
+    # 3. Read it back using a wildcard pattern and assert it is valid
+    with Roxxel(filepath=f"{base_name}_*.rox") as dataset:
+        assert len(dataset) == 1
+        assert len(dataset[0]) == 64
+        
+    clean_shards(base_name)
+    print("Incomplete Shard Recovery test passed successfully!\n")
+
 if __name__ == "__main__":
     test_fused_sharded_mode()
     test_int32_tokenized_dataset()
     test_logger()
+    test_incomplete_shard_recovery()
