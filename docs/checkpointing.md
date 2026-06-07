@@ -74,3 +74,4 @@ Under the hood, the checkpointer tracks the evaluation metrics you pass via `met
 ::: roxxel.checkpoint.Checkpointer
     options:
       show_root_heading: true
+      heading_level: 3

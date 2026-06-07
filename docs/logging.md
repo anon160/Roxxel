@@ -75,3 +75,4 @@ This produces `logs/run_alpha_metrics.csv` automatically with properly aligned c
 ::: roxxel.logging.Logger
     options:
       show_root_heading: true
+      heading_level: 3

@@ -72,3 +72,4 @@ with Roxxel(filepath="./data/fineweb_edu_*.rox") as dataset:
 ::: roxxel.core.Roxxel
     options:
       show_root_heading: true
+      heading_level: 3
