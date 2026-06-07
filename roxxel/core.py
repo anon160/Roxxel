@@ -3,6 +3,7 @@ import glob
 import struct
 import bisect
 import numpy as np
+import jax
 
 class RoxxelStream:
     """
@@ -28,7 +29,7 @@ class Roxxel:
     Packs arbitrary data streams into strictly uniform blocks on disk,
     virtualizes sharded structures, and streams high-performance JAX/NumPy batches.
     """
-    MAGIC_SIGNATURE = b"ROXXEL01"  # 8-byte secure signature tag
+    MAGIC_SIGNATURE = b"ROXXEL02"  # 8-byte secure signature tag
 
     def __init__(self, filepath="./stream_reservoir.rox"):
         self.raw_data = None
@@ -147,22 +148,13 @@ class Roxxel:
                 current_shard_path = last_shard_path
                 shard_idx -= 1
                 
-                if last_shard_size >= 24:
+                if last_shard_size >= 32:
                     with open(current_shard_path, "rb") as f:
-                        if last_shard_size >= 32:
-                            f.seek(last_shard_size - 32)
-                            footer_block = f.read(32)
-                            total_records, raw_data_size, dtype_bytes, file_signature = struct.unpack("<qq8s8s", footer_block)
-                            if file_signature != b"ROXXEL02":
-                                f.seek(last_shard_size - 24)
-                                footer_block = f.read(24)
-                                total_records, raw_data_size, file_signature = struct.unpack("<qq8s", footer_block)
-                        else:
-                            f.seek(last_shard_size - 24)
-                            footer_block = f.read(24)
-                            total_records, raw_data_size, file_signature = struct.unpack("<qq8s", footer_block)
+                        f.seek(last_shard_size - 32)
+                        footer_block = f.read(32)
+                        total_records, raw_data_size, dtype_bytes, file_signature = struct.unpack("<qq8s8s", footer_block)
 
-                    if file_signature in (self.MAGIC_SIGNATURE, b"ROXXEL02"):
+                    if file_signature == b"ROXXEL02":
                         with open(current_shard_path, "rb") as f:
                             f.seek(raw_data_size)
                             end_offsets = np.fromfile(f, dtype="<i8", count=total_records).tolist()
@@ -174,7 +166,7 @@ class Roxxel:
                         end_offsets = []
                         raw_data_size = 0
                 else:
-                    # File exists but is too small to have a valid footer (< 24 bytes), treat as empty/fresh
+                    current_shard_path = f"{base_name}_{shard_idx:04d}.rox"
                     end_offsets = []
                     raw_data_size = 0
             else:
@@ -220,22 +212,13 @@ class Roxxel:
 
         if os.path.exists(path):
             total_file_bytes = os.path.getsize(path)
-            if total_file_bytes >= 24:
+            if total_file_bytes >= 32:
                 with open(path, "rb") as f:
-                    if total_file_bytes >= 32:
-                        f.seek(total_file_bytes - 32)
-                        footer_block = f.read(32)
-                        total_records, raw_data_size, dtype_bytes, file_signature = struct.unpack("<qq8s8s", footer_block)
-                        if file_signature != b"ROXXEL02":
-                            f.seek(total_file_bytes - 24)
-                            footer_block = f.read(24)
-                            total_records, raw_data_size, file_signature = struct.unpack("<qq8s", footer_block)
-                    else:
-                        f.seek(total_file_bytes - 24)
-                        footer_block = f.read(24)
-                        total_records, raw_data_size, file_signature = struct.unpack("<qq8s", footer_block)
+                    f.seek(total_file_bytes - 32)
+                    footer_block = f.read(32)
+                    total_records, raw_data_size, dtype_bytes, file_signature = struct.unpack("<qq8s8s", footer_block)
 
-                if file_signature in (self.MAGIC_SIGNATURE, b"ROXXEL02"):
+                if file_signature == b"ROXXEL02":
                     print(f"♻️ Found existing archive. Stripping index and footer...")
                     with open(path, "rb") as f:
                         f.seek(raw_data_size)
@@ -247,6 +230,9 @@ class Roxxel:
                     print("⚠️ Invalid signature in existing archive. Overwriting/starting fresh...")
                     end_offsets = []
                     raw_data_size = 0
+            else:
+                end_offsets = []
+                raw_data_size = 0
 
         current_offset = raw_data_size
         # Truncate file to 0 if starting fresh or overwriting an invalid archive
@@ -300,31 +286,16 @@ class Roxxel:
                 raise FileNotFoundError(f"Missing dataset shard file at {path}.")
 
             total_file_bytes = os.path.getsize(path)
-            if total_file_bytes < 24:
-                raise ValueError(f"Corrupted shard {path}: size is less than footer size.")
+            if total_file_bytes < 32:
+                raise ValueError(f"Corrupted shard {path}: size is less than 32-byte footer size.")
 
             with open(path, "rb") as f:
-                # Try new 32-byte footer format first (ROXXEL02)
-                if total_file_bytes >= 32:
-                    f.seek(total_file_bytes - 32)
-                    footer_block = f.read(32)
-                    total_records, raw_data_size, dtype_bytes, file_signature = struct.unpack("<qq8s8s", footer_block)
-                    if file_signature == b"ROXXEL02":
-                        dtype = dtype_bytes.decode("utf-8").strip("\x00")
-                    else:
-                        f.seek(total_file_bytes - 24)
-                        footer_block = f.read(24)
-                        total_records, raw_data_size, file_signature = struct.unpack("<qq8s", footer_block)
-                        if file_signature != self.MAGIC_SIGNATURE:
-                            raise ValueError(f"Corrupted signature in shard {path}.")
-                        dtype = "uint8"
-                else:
-                    f.seek(total_file_bytes - 24)
-                    footer_block = f.read(24)
-                    total_records, raw_data_size, file_signature = struct.unpack("<qq8s", footer_block)
-                    if file_signature != self.MAGIC_SIGNATURE:
-                        raise ValueError(f"Corrupted signature in shard {path}.")
-                    dtype = "uint8"
+                f.seek(total_file_bytes - 32)
+                footer_block = f.read(32)
+                total_records, raw_data_size, dtype_bytes, file_signature = struct.unpack("<qq8s8s", footer_block)
+                if file_signature != b"ROXXEL02":
+                    raise ValueError(f"Corrupted signature in shard {path}.")
+                dtype = dtype_bytes.decode("utf-8").strip("\x00")
 
             # Open standard python file handle for safe, pythonic descriptor management
             f_handle = open(path, "rb")
@@ -519,29 +490,13 @@ class Roxxel:
         else:
             total_steps = min(total_steps, max_possible_steps)
 
-        # Detect JAX capability
-        use_jax = False
-        if mesh is not None or data_sharding is not None:
-            use_jax = True
-        else:
-            try:
-                import jax
-                use_jax = True
-            except ImportError:
-                use_jax = False
-
-        if use_jax:
-            import jax
-            if mesh is None or data_sharding is None:
-                try:
-                    from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
-                    from jax.experimental import mesh_utils
-                    devices = jax.devices()
-                    mesh = Mesh(mesh_utils.create_device_mesh((len(devices),)), axis_names=('data',))
-                    data_sharding = NamedSharding(mesh, P('data', None))
-                except Exception as e:
-                    print("⚠️ Could not automatically construct JAX sharding mesh, falling back to NumPy stream: " + str(e))
-                    use_jax = False
+        # Always construct and use JAX data sharding for device array streaming
+        if mesh is None or data_sharding is None:
+            from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+            from jax.experimental import mesh_utils
+            devices = jax.devices()
+            mesh = Mesh(mesh_utils.create_device_mesh((len(devices),)), axis_names=('data',))
+            data_sharding = NamedSharding(mesh, P('data', None))
 
         def batch_generator():
             record_ptr = 0
@@ -570,10 +525,7 @@ class Roxxel:
                 flat_tokens = np.frombuffer(chunk, dtype=native_dtype).astype(dtype)
                 numpy_batch = flat_tokens.reshape(batch_size, seq_len)
                 
-                if use_jax:
-                    # device_put bypasses default device materialization overhead for standard NumPy arrays
-                    yield jax.device_put(numpy_batch, data_sharding)
-                else:
-                    yield numpy_batch
+                # Yield high-performance JAX device array
+                yield jax.device_put(numpy_batch, data_sharding)
 
         return RoxxelStream(batch_generator(), total_steps)

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "roxxel"
-version = "0.5.9"
+version = "0.6.0"
 description = "A zero-RAM, multi-modal, sharded binary dataset manager"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -19,12 +19,12 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "numpy>=1.20.0"
+    "numpy>=1.20.0",
+    "jax>=0.4.0"
 ]
 
 [project.optional-dependencies]
 checkpoint = [
-    "jax>=0.10.1",
     "flax>=0.12.7",
     "orbax-checkpoint>=0.11.40"
 ]
