@@ -1,5 +1,5 @@
-/* Dark scheme overrides (pure black theme) */
-[data-md-color-scheme="slate"] {
+/* Global overrides (pure black theme) */
+:root {
   --md-default-bg-color: #000000;
   --md-default-bg-color--light: #000000;
   --md-default-bg-color--lighter: #000000;
