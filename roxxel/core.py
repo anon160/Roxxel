@@ -65,17 +65,17 @@ class Roxxel:
     # =====================================================================
     # API 1: FUSED FIXED-BLOCK WRITE STREAM (WITH SHARDING)
     # =====================================================================
-    def write(self, data_generator, block_size=4096, max_shard_bytes=None, separator=b"\xff", dtype=None):
+    def write(self, data_generator, separator: bytes, block_size: int = 4096, max_shard_bytes: int = None, dtype: str = None):
         """
         Accepts a stream of strings, bytes, or numpy arrays, packs them into strictly uniform
         blocks of `block_size` bytes (with padding), and writes them to shards or a single file.
 
         Args:
             data_generator: Iterator yielding strings, raw bytes, bytearrays, or numpy arrays.
+            separator (bytes): Separator appended after each item in the stream.
             block_size (int, optional): The target size of each uniform block in bytes. Defaults to 4096.
             max_shard_bytes (int, optional): Maximum size of each shard file in bytes. If exceeded,
                 a new shard is created. Defaults to None (single file).
-            separator (bytes, optional): Separator appended after each item in the stream. Defaults to b"\xff".
             dtype (str, optional): Target numpy dtype for the items. If None, it is automatically detected.
                 Defaults to None.
         """
@@ -448,13 +448,13 @@ class Roxxel:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-    def estimate_steps(self, seq_len: int, batch_size: int = 32) -> int:
+    def estimate_steps(self, seq_len: int, batch_size: int) -> int:
         """
         Calculates the exact number of training steps per epoch for a given sequence length and batch size.
 
         Args:
             seq_len (int): Sequence length of each training sample.
-            batch_size (int, optional): The number of samples per batch. Defaults to 32.
+            batch_size (int): The number of samples per batch.
 
         Returns:
             The exact number of steps in an epoch.
@@ -477,7 +477,7 @@ class Roxxel:
     # =====================================================================
     # API 3: UNIFIED SEQUENCE STREAMING ENGINE (NUMPY / JAX)
     # =====================================================================
-    def stream(self, seq_len: int, batch_size: int, seed: int = 42, start_step: int = 0, completed_phases: list = None, total_steps: int = None, dtype = np.int32, mesh = None, data_sharding = None, mix_datasets: dict = None, weights: dict = None) -> RoxxelStream:
+    def stream(self, seq_len: int, batch_size: int, seed: int, start_step: int = 0, completed_phases: list = None, total_steps: int = None, dtype = np.int32, mesh = None, data_sharding = None, mix_datasets: dict = None, weights: dict = None) -> RoxxelStream:
         """
         Streams from an open Roxxel instance with absolute bit-level determinism.
         Supports multi-phase curriculum training with N phases having different 
@@ -488,7 +488,7 @@ class Roxxel:
         Args:
             seq_len (int): Sequence length of each training sample.
             batch_size (int): The number of samples per batch.
-            seed (int, optional): Random seed for shuffle reproducibility. Defaults to 42.
+            seed (int): Random seed for shuffle reproducibility.
             start_step (int, optional): The global step to resume streaming from. Defaults to 0.
             completed_phases (list of tuple, optional): List of (steps, batch_size, seq_len)
                 for historical training phases. Used to calculate skips accurately. Defaults to None.

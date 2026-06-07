@@ -18,7 +18,7 @@ with Roxxel(filepath="/content/fineweb_edu_*.rox") as dataset:
     print(f"Dataset loaded. Total steps in epoch: {steps}")
     
     # Initialize JAX stream
-    stream = dataset.stream(seq_len=1024, batch_size=32)
+    stream = dataset.stream(seq_len=1024, batch_size=32, seed=42)
     for batch in stream:
         # Train model here
         pass
