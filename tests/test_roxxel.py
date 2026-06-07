@@ -416,6 +416,47 @@ def test_filepath_auto_resolution():
     clean_shards(base_name)
     print("Filepath Auto-Resolution passed successfully!\n")
 
+def test_mixer_exhaustion_renormalization():
+    print("--- Testing RoxxelMixer Exhaustion and Re-normalization ---")
+    import jax
+    
+    base_name1 = "./test_ex_ds1"
+    base_name2 = "./test_ex_ds2"
+    clean_shards(base_name1)
+    clean_shards(base_name2)
+    
+    # Dataset 1 (tiny): only 2 blocks of 64 tokens = 128 tokens
+    tokens_ds1 = [np.arange(i * 64, (i + 1) * 64, dtype=np.int32) for i in range(2)]
+    # Dataset 2 (large): 16 blocks of 64 tokens = 1024 tokens
+    tokens_ds2 = [np.arange(1000 + i * 64, 1000 + (i + 1) * 64, dtype=np.int32) for i in range(16)]
+    
+    rox1 = Roxxel(filepath=f"{base_name1}_*.rox")
+    rox1.write(tokens_ds1, block_size=256, max_shard_bytes=10000, separator=None)
+    
+    rox2 = Roxxel(filepath=f"{base_name2}_*.rox")
+    rox2.write(tokens_ds2, block_size=256, max_shard_bytes=10000, separator=None)
+    
+    with Roxxel(filepath=f"{base_name1}_*.rox") as ds1, Roxxel(filepath=f"{base_name2}_*.rox") as ds2:
+        mix_datasets = {"ds2": ds2}
+        weights = {"self": 0.5, "ds2": 0.5}
+        
+        # We request 20 global steps (ds1 runs out of capacity around step 8, ds2 continues alone)
+        stream = ds1.stream(
+            seq_len=8, batch_size=4, seed=42, start_step=0, total_steps=20,
+            mix_datasets=mix_datasets, weights=weights
+        )
+        assert len(stream) == 20
+        batches = list(stream)
+        assert len(batches) == 20
+        
+        # Check that the last batch only contains ds2 tokens (ds1 was exhausted)
+        last_batch = np.array(batches[-1])
+        assert np.all(last_batch >= 1000)
+        
+    clean_shards(base_name1)
+    clean_shards(base_name2)
+    print("RoxxelMixer Exhaustion and Re-normalization test passed successfully!\n")
+
 if __name__ == "__main__":
     test_fused_sharded_mode()
     test_int32_tokenized_dataset()
@@ -424,3 +465,4 @@ if __name__ == "__main__":
     test_multiphase_curriculum_stream()
     test_mixer_multiphase_stream()
     test_filepath_auto_resolution()
+    test_mixer_exhaustion_renormalization()

@@ -464,58 +464,72 @@ class Roxxel:
                 raise ValueError("mix_datasets/self and weights must have matching keys.")
                 
             names = list(all_datasets.keys())
-            total_w = sum(weights.values())
-            if total_w <= 0:
-                raise ValueError("Total weights must be positive.")
-            probs = np.array([weights[name] / total_w for name in names], dtype=np.float64)
-
-            # Determine native dtype matching the first dataset's configuration
-            first_dataset = all_datasets[names[0]]
-            if not first_dataset._is_open:
-                first_dataset.open()
-                
-            native_dtype_name = getattr(first_dataset, "dtype", "uint8")
-            native_dtype = np.dtype(native_dtype_name)
-            element_size = native_dtype.itemsize
-
-            # 1. Determine a safe upper bound on total global steps
-            max_possible_global_steps = 0
-            for name in names:
-                dataset = all_datasets[name]
-                if not dataset._is_open:
-                    dataset.open()
-                compile_block_size = len(dataset[0])
-                total_dataset_bytes = len(dataset) * compile_block_size
-                total_bytes_per_batch = batch_size * seq_len * element_size
-                max_possible_global_steps += total_dataset_bytes // total_bytes_per_batch
-
-            if completed_phases:
-                max_possible_global_steps += sum(p[0] for p in completed_phases)
-
-            rng_sim = np.random.default_rng(seed)
-            all_choices = rng_sim.choice(len(names), size=max_possible_global_steps, p=probs)
-
-            # 2. Simulate historical steps allocation
-            local_completed_phases = {name: [] for name in names}
-            global_accumulator = 0
             
-            if completed_phases:
-                for p_steps, p_batch_size, p_seq_len in completed_phases:
-                    choices = all_choices[global_accumulator : global_accumulator + p_steps]
-                    counts = np.bincount(choices, minlength=len(names))
-                    for i, name in enumerate(names):
-                        local_completed_phases[name].append((counts[i], p_batch_size, p_seq_len))
-                    global_accumulator += p_steps
+            # Determine total bytes for each dataset
+            dataset_bytes = []
+            for name in names:
+                ds = all_datasets[name]
+                if not ds._is_open:
+                    ds.open()
+                compile_block_size = len(ds[0])
+                total_bytes = len(ds) * compile_block_size
+                dataset_bytes.append(total_bytes)
 
-            # 3. Simulate current phase allocations
-            current_phase_steps = start_step - global_accumulator
+            # We use a deterministic RNG for the entire simulation
+            rng_sim = np.random.default_rng(seed)
+            
+            # Track remaining bytes for each dataset
+            rem_bytes = {name: dataset_bytes[names.index(name)] for name in names}
+            
+            # We track local steps completed by each dataset in each phase
+            local_completed_phases = {name: [] for name in names}
             local_start_steps = {name: 0 for name in names}
             
+            # List of historical phases plus the current phase up to start_step
+            phases_to_simulate = []
+            if completed_phases:
+                for p_steps, p_batch_size, p_seq_len in completed_phases:
+                    phases_to_simulate.append((p_steps, p_batch_size, p_seq_len, False))
+            # Add the current phase up to start_step
+            current_phase_steps = start_step - sum(p[0] for p in completed_phases) if completed_phases else start_step
             if current_phase_steps > 0:
-                choices = all_choices[global_accumulator : start_step]
-                counts = np.bincount(choices, minlength=len(names))
-                for i, name in enumerate(names):
-                    local_start_steps[name] = counts[i]
+                phases_to_simulate.append((current_phase_steps, batch_size, seq_len, True))
+                
+            # Run the step-by-step simulation
+            for p_steps, p_batch_size, p_seq_len, is_current in phases_to_simulate:
+                p_bytes_per_step = {}
+                for name in names:
+                    ds = all_datasets[name]
+                    native_dtype_name = getattr(ds, "dtype", "uint8")
+                    el_size = np.dtype(native_dtype_name).itemsize
+                    p_bytes_per_step[name] = p_batch_size * p_seq_len * el_size
+                    
+                phase_counts = {name: 0 for name in names}
+                
+                for t in range(p_steps):
+                    active_names = [name for name in names if rem_bytes[name] >= p_bytes_per_step[name]]
+                    if not active_names:
+                        break
+                        
+                    if len(active_names) > 1:
+                        active_weights = np.array([weights[name] for name in active_names], dtype=np.float64)
+                        sum_w = active_weights.sum()
+                        if sum_w <= 0:
+                            break
+                        active_probs = active_weights / sum_w
+                        chosen_name = rng_sim.choice(active_names, p=active_probs)
+                    else:
+                        chosen_name = active_names[0]
+                        
+                    rem_bytes[chosen_name] -= p_bytes_per_step[chosen_name]
+                    phase_counts[chosen_name] += 1
+                    
+                if is_current:
+                    for name in names:
+                        local_start_steps[name] = phase_counts[name]
+                else:
+                    for name in names:
+                        local_completed_phases[name].append((phase_counts[name], p_batch_size, p_seq_len))
 
             # 4. Instantiate underlying streams recursively
             local_streams = {}
@@ -534,29 +548,44 @@ class Roxxel:
                     weights=None
                 )
 
-            # 5. Determine total remaining steps
-            if total_steps is None:
-                max_steps = None
-                for name in names:
-                    rem_steps = len(local_streams[name])
-                    prob = probs[names.index(name)]
-                    if prob > 0:
-                        est = int(rem_steps / prob)
-                        if max_steps is None or est < max_steps:
-                            max_steps = est
-                total_steps = max_steps if max_steps is not None else 0
+            # 5. Determine the remaining steps and the active choices sequence
+            cur_bytes_per_step = {}
+            for name in names:
+                ds = all_datasets[name]
+                native_dtype_name = getattr(ds, "dtype", "uint8")
+                el_size = np.dtype(native_dtype_name).itemsize
+                cur_bytes_per_step[name] = batch_size * seq_len * el_size
+
+            active_choices = []
+            step_limit = total_steps if total_steps is not None else float('inf')
+            step_idx = 0
+            
+            while step_idx < step_limit:
+                active_names = [name for name in names if rem_bytes[name] >= cur_bytes_per_step[name]]
+                if not active_names:
+                    break
+                    
+                if len(active_names) > 1:
+                    active_weights = np.array([weights[name] for name in active_names], dtype=np.float64)
+                    sum_w = active_weights.sum()
+                    if sum_w <= 0:
+                        break
+                    active_probs = active_weights / sum_w
+                    chosen_name = rng_sim.choice(active_names, p=active_probs)
+                else:
+                    chosen_name = active_names[0]
+                    
+                rem_bytes[chosen_name] -= cur_bytes_per_step[chosen_name]
+                active_choices.append(chosen_name)
+                step_idx += 1
+                
+            total_steps = len(active_choices)
 
             # 6. Generator
             def mix_generator():
-                for step_idx in range(total_steps):
-                    global_step = start_step + step_idx
-                    if global_step >= len(all_choices):
-                        return
-                    dataset_idx = all_choices[global_step]
-                    active_name = names[dataset_idx]
-                    
+                for chosen_name in active_choices:
                     try:
-                        yield next(local_streams[active_name])
+                        yield next(local_streams[chosen_name])
                     except StopIteration:
                         return
 
