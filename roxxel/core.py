@@ -424,12 +424,121 @@ class Roxxel:
     # =====================================================================
     # API 3: UNIFIED SEQUENCE STREAMING ENGINE (NUMPY / JAX)
     # =====================================================================
-    def stream(self, seq_len, batch_size=32, seed=42, start_step=0, completed_phases=None, total_steps=None, dtype=np.int32, mesh=None, data_sharding=None):
+    def stream(self, seq_len=1024, batch_size=32, seed=42, start_step=0, completed_phases=None, total_steps=None, dtype=np.int32, mesh=None, data_sharding=None, mix_datasets=None, weights=None):
         """
         Streams from an open Roxxel instance with absolute bit-level determinism.
         Supports multi-phase curriculum training with N phases having different 
         batch sizes and sequence lengths.
+        
+        Optionally mixes multiple Roxxel datasets according to specified weights.
         """
+        if mix_datasets and weights:
+            # Check that keys match
+            all_datasets = {"self": self}
+            all_datasets.update(mix_datasets)
+            
+            if set(all_datasets.keys()) != set(weights.keys()):
+                raise ValueError("mix_datasets/self and weights must have matching keys.")
+                
+            names = list(all_datasets.keys())
+            total_w = sum(weights.values())
+            if total_w <= 0:
+                raise ValueError("Total weights must be positive.")
+            probs = np.array([weights[name] / total_w for name in names], dtype=np.float64)
+
+            # Determine native dtype matching the first dataset's configuration
+            first_dataset = all_datasets[names[0]]
+            if not first_dataset._is_open:
+                first_dataset.open()
+                
+            native_dtype_name = getattr(first_dataset, "dtype", "uint8")
+            native_dtype = np.dtype(native_dtype_name)
+            element_size = native_dtype.itemsize
+
+            # 1. Determine a safe upper bound on total global steps
+            max_possible_global_steps = 0
+            for name in names:
+                dataset = all_datasets[name]
+                if not dataset._is_open:
+                    dataset.open()
+                compile_block_size = len(dataset[0])
+                total_dataset_bytes = len(dataset) * compile_block_size
+                total_bytes_per_batch = batch_size * seq_len * element_size
+                max_possible_global_steps += total_dataset_bytes // total_bytes_per_batch
+
+            if completed_phases:
+                max_possible_global_steps += sum(p[0] for p in completed_phases)
+
+            rng_sim = np.random.default_rng(seed)
+            all_choices = rng_sim.choice(len(names), size=max_possible_global_steps, p=probs)
+
+            # 2. Simulate historical steps allocation
+            local_completed_phases = {name: [] for name in names}
+            global_accumulator = 0
+            
+            if completed_phases:
+                for p_steps, p_batch_size, p_seq_len in completed_phases:
+                    choices = all_choices[global_accumulator : global_accumulator + p_steps]
+                    counts = np.bincount(choices, minlength=len(names))
+                    for i, name in enumerate(names):
+                        local_completed_phases[name].append((counts[i], p_batch_size, p_seq_len))
+                    global_accumulator += p_steps
+
+            # 3. Simulate current phase allocations
+            current_phase_steps = start_step - global_accumulator
+            local_start_steps = {name: 0 for name in names}
+            
+            if current_phase_steps > 0:
+                choices = all_choices[global_accumulator : start_step]
+                counts = np.bincount(choices, minlength=len(names))
+                for i, name in enumerate(names):
+                    local_start_steps[name] = counts[i]
+
+            # 4. Instantiate underlying streams recursively
+            local_streams = {}
+            for i, name in enumerate(names):
+                local_streams[name] = all_datasets[name].stream(
+                    seq_len=seq_len,
+                    batch_size=batch_size,
+                    seed=seed + i + 1,
+                    start_step=local_start_steps[name],
+                    completed_phases=local_completed_phases[name],
+                    total_steps=None,
+                    dtype=dtype,
+                    mesh=mesh,
+                    data_sharding=data_sharding,
+                    mix_datasets=None,
+                    weights=None
+                )
+
+            # 5. Determine total remaining steps
+            if total_steps is None:
+                max_steps = None
+                for name in names:
+                    rem_steps = len(local_streams[name])
+                    prob = probs[names.index(name)]
+                    if prob > 0:
+                        est = int(rem_steps / prob)
+                        if max_steps is None or est < max_steps:
+                            max_steps = est
+                total_steps = max_steps if max_steps is not None else 0
+
+            # 6. Generator
+            def mix_generator():
+                for step_idx in range(total_steps):
+                    global_step = start_step + step_idx
+                    if global_step >= len(all_choices):
+                        return
+                    dataset_idx = all_choices[global_step]
+                    active_name = names[dataset_idx]
+                    
+                    try:
+                        yield next(local_streams[active_name])
+                    except StopIteration:
+                        return
+
+            return RoxxelStream(mix_generator(), total_steps)
+
         total_blocks = len(self)
         if total_blocks == 0:
             raise ValueError("Roxxel database is empty or not opened.")
