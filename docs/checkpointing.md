@@ -1,4 +1,4 @@
-# Asynchronous Checkpointing 🔄
+# Checkpointing
 
 Writing multi-gigabyte neural network weights and optimizer states to disk can freeze your GPU/TPU accelerators for several seconds, reducing hardware utilization. 
 

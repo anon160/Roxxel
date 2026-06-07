@@ -1,4 +1,4 @@
-# Dataloader & Streaming 📦
+# Dataloader & Streaming
 
 Roxxel provides a zero-RAM, OS-level memory-mapped dataset manager designed for JAX/Flax pipelines. It virtualizes multiple dataset shards into a single contiguous stream and pipes batches directly onto JAX device sharding layouts.
 

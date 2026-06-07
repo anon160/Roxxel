@@ -1,10 +1,10 @@
-# Asynchronous Logging 📝
+# Logging
 
 Roxxel's `Logger` implements a high-performance, queue-based logging architecture. To prevent system I/O (like writes to stdout, files, and CSVs) from slowing down high-throughput TPU/GPU training loops, all log writing is offloaded to background worker threads.
 
 ---
 
-## Why the Context Manager is Critical ⚠️
+## Why the Context Manager is Critical
 
 Because logging happens asynchronously on a separate background thread, standard print statements or un-managed logs are highly vulnerable. If your TPU/GPU throws an Out of Memory (OOM) error or JAX crashes:
 1. The main thread terminates instantly.
@@ -19,7 +19,7 @@ from roxxel import Logger
 
 # Initialize the async logger context
 with Logger(log_dir="./run_directory") as logger:
-    logger.log_message("🚀 Initializing deep pre-training cluster...")
+    logger.log_message("Initializing deep pre-training cluster...")
     
     # Under the hood, any exceptions raised here are caught by the context manager.
     # It logs the traceback, drains/flushes the async queue to disk, and then propagates the error.
