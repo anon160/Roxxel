@@ -11,6 +11,11 @@ class RoxxelStream:
     that exposes the exact __len__ of the training steps in the stream.
     """
     def __init__(self, generator, total_steps):
+        """
+        Args:
+            generator: The underlying generator yielding batches.
+            total_steps (int): The total number of steps in this stream.
+        """
         self.generator = generator
         self.total_steps = total_steps
 
@@ -32,6 +37,11 @@ class Roxxel:
     MAGIC_SIGNATURE = b"ROXXEL02"  # 8-byte secure signature tag
 
     def __init__(self, filepath="./stream_reservoir.rox"):
+        """
+        Args:
+            filepath (str or list of str): A single file path, glob pattern, directory,
+                or a list of file paths containing Roxxel shards.
+        """
         self.raw_data = None
         self.index_table = None
         self._total_records = 0
@@ -59,6 +69,15 @@ class Roxxel:
         """
         Accepts a stream of strings, bytes, or numpy arrays, packs them into strictly uniform
         blocks of `block_size` bytes (with padding), and writes them to shards or a single file.
+
+        Args:
+            data_generator: Iterator yielding strings, raw bytes, bytearrays, or numpy arrays.
+            block_size (int, optional): The target size of each uniform block in bytes. Defaults to 4096.
+            max_shard_bytes (int, optional): Maximum size of each shard file in bytes. If exceeded,
+                a new shard is created. Defaults to None (single file).
+            separator (bytes, optional): Separator appended after each item in the stream. Defaults to b"\xff".
+            dtype (str, optional): Target numpy dtype for the items. If None, it is automatically detected.
+                Defaults to None.
         """
         self.close()
 
@@ -269,6 +288,10 @@ class Roxxel:
     def open(self):
         """
         Memory maps all files in the sharded dataset for high-performance read-only access.
+
+        Raises:
+            FileNotFoundError: If no matching shard files are found.
+            ValueError: If a shard file is corrupted (e.g. invalid signature or size).
         """
         if self._is_open:
             return
@@ -428,6 +451,13 @@ class Roxxel:
     def estimate_steps(self, seq_len, batch_size=32):
         """
         Calculates the exact number of training steps per epoch for a given sequence length and batch size.
+
+        Args:
+            seq_len (int): Sequence length of each training sample.
+            batch_size (int, optional): The number of samples per batch. Defaults to 32.
+
+        Returns:
+            int: The exact number of steps in an epoch.
         """
         if not self._is_open:
             self.open()
@@ -454,6 +484,26 @@ class Roxxel:
         batch sizes and sequence lengths.
         
         Optionally mixes multiple Roxxel datasets according to specified weights.
+
+        Args:
+            seq_len (int): Sequence length of each training sample.
+            batch_size (int): The number of samples per batch.
+            seed (int, optional): Random seed for shuffle reproducibility. Defaults to 42.
+            start_step (int, optional): The global step to resume streaming from. Defaults to 0.
+            completed_phases (list of tuple, optional): List of (steps, batch_size, seq_len)
+                for historical training phases. Used to calculate skips accurately. Defaults to None.
+            total_steps (int, optional): Limit the stream to a maximum number of steps. Defaults to None.
+            dtype (numpy dtype, optional): The datatype of the training arrays to yield. Defaults to np.int32.
+            mesh (jax.sharding.Mesh, optional): JAX hardware device mesh for sharding. If None,
+                it is automatically generated. Defaults to None.
+            data_sharding (jax.sharding.NamedSharding, optional): JAX named sharding specification.
+                If None, it is automatically generated. Defaults to None.
+            mix_datasets (dict, optional): Dict mapping names to other Roxxel dataset instances to mix.
+                Defaults to None.
+            weights (dict, optional): Dict mapping dataset names to mixing weights. Defaults to None.
+
+        Returns:
+            RoxxelStream: An iterator yielding JAX device arrays.
         """
         if mix_datasets and weights:
             # Check that keys match

@@ -22,6 +22,12 @@ class Logger:
     are completely flushed and drained to disk before termination.
     """
     def __init__(self, log_dir: str, filename_prefix: str = "roxxel", logger_name: str = "RoxxelCore"):
+        """
+        Args:
+            log_dir (str): Directory where standard log files and metric CSV files will be saved.
+            filename_prefix (str, optional): Prefix for generated log files. Defaults to "roxxel".
+            logger_name (str, optional): Name of the underlying Python logger. Defaults to "RoxxelCore".
+        """
         self.log_dir = log_dir
         
         try:
@@ -127,12 +133,22 @@ class Logger:
         return False
 
     def log_message(self, message: str, level: int = logging.INFO):
-        """Passes a string to the system log queue. Takes 0ms on your main training loop thread."""
+        """Passes a string to the system log queue. Takes 0ms on your main training loop thread.
+
+        Args:
+            message (str): The log message string.
+            level (int, optional): The log level (e.g. logging.INFO, logging.WARNING). Defaults to logging.INFO.
+        """
         if self.is_rank_zero:
             self.logger.log(level, message)
 
     def log_metrics_summary(self, step: int, metrics: dict):
-        """Appends arbitrary metric dictionary data asynchronously to a persistent CSV file."""
+        """Appends arbitrary metric dictionary data asynchronously to a persistent CSV file.
+
+        Args:
+            step (int): The current training step number.
+            metrics (dict): Dict of metrics to write (e.g. {'loss': 0.1, 'accuracy': 0.9}).
+        """
         if self.is_rank_zero:
             self.metrics_queue.put((step, metrics))
 
