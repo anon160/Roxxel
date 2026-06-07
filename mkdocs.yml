@@ -1,0 +1,45 @@
+site_name: Roxxel
+site_description: A zero-RAM, JAX-centric dataloading, streaming, and asynchronous checkpointing & logging toolkit.
+site_author: anon160
+repo_name: anon160/Roxxel
+repo_url: https://github.com/anon160/Roxxel
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: teal
+      accent: purple
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+    - scheme: slate
+      primary: teal
+      accent: purple
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          options:
+            show_source: true
+            show_root_heading: true
+            show_root_toc_entry: true
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences

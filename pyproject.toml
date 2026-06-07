@@ -28,6 +28,12 @@ checkpoint = [
     "flax>=0.12.7",
     "orbax-checkpoint>=0.11.40"
 ]
+docs = [
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.0.0",
+    "mkdocstrings[python]>=0.24.0",
+    "griffe>=0.38.0"
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["roxxel"]

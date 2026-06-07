@@ -3,6 +3,15 @@ from flax import nnx
 import orbax.checkpoint as ocp
 
 class Checkpointer:
+    """
+    Asynchronous JAX/Flax NNX module and optimizer checkpointer.
+    
+    Uses Orbax Checkpoint Manager underneath to perform zero-overhead, multi-threaded
+    state serialization on background threads, preventing disk writes from blocking 
+    accelerator (GPU/TPU) training.
+    
+    Supports topology-agnostic PyTree reconstruction and automated best-loss tracking.
+    """
     def __init__(self, checkpoint_path: str, model: nnx.Module, optimizer: nnx.Optimizer, max_to_keep: int = 3, timeout: int = 1000):
         self.checkpoint_path = os.path.abspath(checkpoint_path)
         self.model = model
