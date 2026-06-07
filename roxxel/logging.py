@@ -51,7 +51,9 @@ class Logger:
             self.queue_handler = QueueHandler(self.log_queue)
             self.logger = logging.getLogger(logger_name)
             self.logger.setLevel(logging.INFO)
+            self.logger.handlers.clear()
             self.logger.addHandler(self.queue_handler)
+            self.logger.propagate = False
 
             # 2. Asynchronous Metrics CSV Writer Setup
             self.metrics_csv_path = os.path.join(self.log_dir, f"{filename_prefix}_metrics.csv")
@@ -145,3 +147,7 @@ class Logger:
             # 2. Stop system logs listener
             if hasattr(self, 'listener'):
                 self.listener.stop()  # Drains log queue completely to disk before closing
+
+            # 3. Cleanly remove handler from singleton logger
+            if hasattr(self, 'logger') and hasattr(self, 'queue_handler'):
+                self.logger.removeHandler(self.queue_handler)
