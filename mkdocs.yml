@@ -67,3 +67,9 @@ markdown_extensions:
   - pymdownx.inlinehilite
   - pymdownx.snippets
   - pymdownx.superfences
+
+extra:
+  generator: false
+
+extra_css:
+  - stylesheets/extra.css
