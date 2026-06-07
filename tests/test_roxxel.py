@@ -169,8 +169,92 @@ def test_incomplete_shard_recovery():
     clean_shards(base_name)
     print("Incomplete Shard Recovery test passed successfully!\n")
 
+def test_multiphase_curriculum_stream():
+    print("--- Testing Multiphase Curriculum Stream Resumption ---")
+    base_name = "./test_curriculum"
+    clean_shards(base_name)
+
+    # 1. Write a sequence of int32 tokens: 16 blocks of 64 tokens = 1024 tokens.
+    fake_tokens = [
+        np.arange(i * 64, (i + 1) * 64, dtype=np.int32)
+        for i in range(16)
+    ]
+    
+    rox = Roxxel(filepath=f"{base_name}_*.rox")
+    # Write to a single or sharded file
+    rox.write(fake_tokens, block_size=256, max_shard_bytes=10000, separator=None)
+
+    with Roxxel(filepath=f"{base_name}_*.rox") as dataset:
+        # Load all tokens sequentially in shuffled block order to compare
+        total_blocks = len(dataset)
+        global_indices = np.arange(total_blocks)
+        rng = np.random.default_rng(42)
+        rng.shuffle(global_indices)
+        
+        flat_shuffled_bytes = np.concatenate([dataset[int(idx)] for idx in global_indices])
+        flat_shuffled = np.frombuffer(flat_shuffled_bytes.tobytes(), dtype=np.dtype(dataset.dtype))
+        
+        # Define the curriculum:
+        # Phase 0: 5 steps, batch_size=4, seq_len=8 (total 160 tokens)
+        # Phase 1: 3 steps, batch_size=2, seq_len=16 (total 96 tokens)
+        # Phase 2: 2 steps, batch_size=8, seq_len=4 (total 64 tokens)
+        
+        completed_phases = [
+            (5, 4, 8),    # Phase 0: 5 steps, batch_size 4, seq_len 8
+            (3, 2, 16),   # Phase 1: 3 steps, batch_size 2, seq_len 16
+        ]
+        
+        # Test Case A: Streaming Phase 0 (start_step = 0, no completed phases)
+        stream_p0 = dataset.stream(seq_len=8, batch_size=4, seed=42, start_step=0, total_steps=5)
+        assert len(stream_p0) == 5
+        batches_p0 = list(stream_p0)
+        assert len(batches_p0) == 5
+        assert batches_p0[0].shape == (4, 8)
+        # Verify the tokens match flat_shuffled
+        p0_reconstructed = np.concatenate([b.flatten() for b in batches_p0])
+        assert np.array_equal(p0_reconstructed, flat_shuffled[0:160])
+        
+        # Test Case B: Resuming Phase 1 at step 5 (completed Phase 0)
+        stream_p1 = dataset.stream(
+            seq_len=16, batch_size=2, seed=42, start_step=5,
+            completed_phases=[(5, 4, 8)], total_steps=3
+        )
+        assert len(stream_p1) == 3
+        batches_p1 = list(stream_p1)
+        assert len(batches_p1) == 3
+        assert batches_p1[0].shape == (2, 16)
+        p1_reconstructed = np.concatenate([b.flatten() for b in batches_p1])
+        assert np.array_equal(p1_reconstructed, flat_shuffled[160:256])
+        
+        # Test Case C: Resuming Phase 2 at step 8 (completed Phase 0 and Phase 1)
+        stream_p2 = dataset.stream(
+            seq_len=4, batch_size=8, seed=42, start_step=8,
+            completed_phases=completed_phases, total_steps=2
+        )
+        assert len(stream_p2) == 2
+        batches_p2 = list(stream_p2)
+        assert len(batches_p2) == 2
+        assert batches_p2[0].shape == (8, 4)
+        p2_reconstructed = np.concatenate([b.flatten() for b in batches_p2])
+        assert np.array_equal(p2_reconstructed, flat_shuffled[256:320])
+
+        # Test Case D: Resuming Phase 1 in the middle (e.g. start_step = 6, completed_phases=completed_phases, but we want 2 steps remaining)
+        stream_p1_mid = dataset.stream(
+            seq_len=16, batch_size=2, seed=42, start_step=6,
+            completed_phases=completed_phases, total_steps=2
+        )
+        assert len(stream_p1_mid) == 2
+        batches_p1_mid = list(stream_p1_mid)
+        assert len(batches_p1_mid) == 2
+        p1_mid_reconstructed = np.concatenate([b.flatten() for b in batches_p1_mid])
+        assert np.array_equal(p1_mid_reconstructed, flat_shuffled[192:256])
+
+    clean_shards(base_name)
+    print("Multiphase Curriculum Stream Resumption passed successfully!\n")
+
 if __name__ == "__main__":
     test_fused_sharded_mode()
     test_int32_tokenized_dataset()
     test_logger()
     test_incomplete_shard_recovery()
+    test_multiphase_curriculum_stream()

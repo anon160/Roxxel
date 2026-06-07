@@ -453,11 +453,11 @@ class Roxxel:
     # =====================================================================
     # API 3: UNIFIED SEQUENCE STREAMING ENGINE (NUMPY / JAX)
     # =====================================================================
-    def stream(self, seq_len, batch_size=32, seed=42, start_step=0, dtype=np.int32, mesh=None, data_sharding=None):
+    def stream(self, seq_len, batch_size=32, seed=42, start_step=0, completed_phases=None, total_steps=None, dtype=np.int32, mesh=None, data_sharding=None):
         """
         Streams from an open Roxxel instance with absolute bit-level determinism.
-        If JAX is installed and mesh parameters are provided/accessible, returns JAX device arrays.
-        Otherwise, yields standard NumPy batches of shape (batch_size, seq_len).
+        Supports multi-phase curriculum training with N phases having different 
+        batch sizes and sequence lengths.
         """
         total_blocks = len(self)
         if total_blocks == 0:
@@ -475,23 +475,49 @@ class Roxxel:
         native_dtype = np.dtype(native_dtype_name)
         element_size = native_dtype.itemsize
         
-        # Calculate bytes per batch based on the file's native element size
+        # Calculate bytes per batch for the CURRENT phase layout configuration
         total_bytes_per_batch = batch_size * seq_len * element_size
-        
-        # Calculate target training dtype (defaults to np.int32)
         dtype = np.dtype(dtype)
         
-        # O(1) complexity checkpoint fast-forward
-        total_bytes_to_skip = start_step * total_bytes_per_batch
+        # --- GENERALIZED N-PHASE ASYMMETRIC RESUME MATH ---
+        total_bytes_to_skip = 0
+        current_step_accumulator = 0
+        phase_found = False
+        
+        if completed_phases:
+            for p_steps, p_batch_size, p_seq_len in completed_phases:
+                if start_step < current_step_accumulator + p_steps:
+                    # The start_step resides within this historical phase!
+                    steps_in_this_phase = start_step - current_step_accumulator
+                    total_bytes_to_skip += steps_in_this_phase * p_batch_size * p_seq_len * element_size
+                    current_step_accumulator = start_step
+                    phase_found = True
+                    break
+                else:
+                    # This historical phase was fully completed
+                    total_bytes_to_skip += p_steps * p_batch_size * p_seq_len * element_size
+                    current_step_accumulator += p_steps
+        
+        if not phase_found:
+            # The start_step resides in the current phase
+            steps_in_current_phase = start_step - current_step_accumulator
+            total_bytes_to_skip += steps_in_current_phase * total_bytes_per_batch
+            
         consumed_blocks, remainder_bytes = divmod(total_bytes_to_skip, compile_block_size)
         
         if consumed_blocks > 0:
             global_indices = global_indices[consumed_blocks:]
-            print(f"⏭️ Roxxel instantly jumped past {consumed_blocks} blocks. Resuming at step {start_step}.")
+            print(f"⏭️ Roxxel instantly jumped past {consumed_blocks} blocks. Resuming at global step {start_step}.")
         
-        # Determine the total remaining steps for this stream
-        initial_steps = self.estimate_steps(seq_len, batch_size)
-        total_steps = max(0, initial_steps - start_step)
+        # Determine the total remaining steps for this stream session context window
+        total_dataset_bytes = total_blocks * compile_block_size
+        remaining_bytes = max(0, total_dataset_bytes - total_bytes_to_skip)
+        max_possible_steps = remaining_bytes // total_bytes_per_batch
+        
+        if total_steps is None:
+            total_steps = max_possible_steps
+        else:
+            total_steps = min(total_steps, max_possible_steps)
 
         # Detect JAX capability
         use_jax = False
