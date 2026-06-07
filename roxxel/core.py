@@ -448,7 +448,7 @@ class Roxxel:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-    def estimate_steps(self, seq_len, batch_size=32):
+    def estimate_steps(self, seq_len: int, batch_size: int = 32) -> int:
         """
         Calculates the exact number of training steps per epoch for a given sequence length and batch size.
 
@@ -457,7 +457,7 @@ class Roxxel:
             batch_size (int, optional): The number of samples per batch. Defaults to 32.
 
         Returns:
-            int: The exact number of steps in an epoch.
+            The exact number of steps in an epoch.
         """
         if not self._is_open:
             self.open()
@@ -477,7 +477,7 @@ class Roxxel:
     # =====================================================================
     # API 3: UNIFIED SEQUENCE STREAMING ENGINE (NUMPY / JAX)
     # =====================================================================
-    def stream(self, seq_len, batch_size, seed=42, start_step=0, completed_phases=None, total_steps=None, dtype=np.int32, mesh=None, data_sharding=None, mix_datasets=None, weights=None):
+    def stream(self, seq_len: int, batch_size: int, seed: int = 42, start_step: int = 0, completed_phases: list = None, total_steps: int = None, dtype = np.int32, mesh = None, data_sharding = None, mix_datasets: dict = None, weights: dict = None) -> RoxxelStream:
         """
         Streams from an open Roxxel instance with absolute bit-level determinism.
         Supports multi-phase curriculum training with N phases having different 
@@ -503,7 +503,7 @@ class Roxxel:
             weights (dict, optional): Dict mapping dataset names to mixing weights. Defaults to None.
 
         Returns:
-            RoxxelStream: An iterator yielding JAX device arrays.
+            An iterator yielding JAX device arrays.
         """
         if mix_datasets and weights:
             # Check that keys match

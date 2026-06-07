@@ -61,7 +61,7 @@ class Checkpointer:
         """Restores parameters and optimizer tracking vectors natively without dictionary nesting.
 
         Returns:
-            int: The step index of the restored checkpoint, or 0 if no checkpoint was found.
+            The step index of the restored checkpoint, or 0 if no checkpoint was found.
         """
         latest_step = self.mngr.latest_step()
         if latest_step is None:

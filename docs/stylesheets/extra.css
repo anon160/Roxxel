@@ -25,3 +25,102 @@ html {
   background-color: #000000 !important;
   box-shadow: none !important;
 }
+
+/* Hide logo in the top header */
+.md-header .md-logo {
+  display: none !important;
+}
+
+/* Position and size the logo at the top of the left sidebar navigation */
+.md-sidebar--primary .md-nav__title .md-logo {
+  display: block !important;
+  margin-bottom: 12px;
+}
+
+.md-sidebar--primary .md-nav__title .md-logo img {
+  width: 140px !important; /* Make the logo bigger */
+  height: auto !important;
+  display: block;
+}
+
+/* Format the sidebar navigation title container to hold the logo on top */
+.md-sidebar--primary .md-nav__title {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: flex-start !important;
+  height: auto !important;
+  padding: 24px 16px 16px 16px !important;
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+
+/* Hide footer completely */
+.md-footer {
+  display: none !important;
+}
+
+/* Custom monochrome link colors (GitHub-like dark style) */
+:root, [data-md-color-scheme="slate"] {
+  --md-typeset-a-color: #8b949e !important;
+  --md-typeset-a-color--hover: #ffffff !important;
+  --md-accent-fg-color: #ffffff !important;
+  --md-accent-fg-color--transparent: rgba(255, 255, 255, 0.1) !important;
+}
+
+/* Sidebar navigation links hover and active styling */
+.md-sidebar .md-nav__link:hover {
+  color: #ffffff !important;
+}
+
+.md-sidebar .md-nav__link--active {
+  color: #ffffff !important;
+  font-weight: 700;
+}
+
+/* Table of contents active item hover/active */
+.md-nav__item .md-nav__link--active {
+  color: #ffffff !important;
+}
+
+
+/* Hide repository name and stars next to the GitHub icon in the header */
+.md-source__repository {
+  display: none !important;
+}
+
+/* Align and clean up the GitHub icon in the header */
+.md-source__icon {
+  margin-right: 0 !important;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+}
+
+.md-source {
+  background-color: transparent !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 0 !important;
+  margin-left: 0.8rem !important;
+  transition: opacity 0.25s !important;
+}
+
+.md-source:hover {
+  opacity: 0.7 !important;
+}
+
+/* Indent child members (methods, attributes) in API Reference for visual hierarchy */
+.doc-children {
+  margin-left: 1.6rem !important;
+  border-left: 2px solid #262626 !important; /* Subtle vertical line guiding the nesting */
+  padding-left: 1.2rem !important;
+}
+
+/* Add custom spacing for nested members to make it less cluttered */
+.doc-children .doc-object {
+  margin-bottom: 2rem !important;
+}
+
+
+
