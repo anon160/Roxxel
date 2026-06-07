@@ -31,7 +31,6 @@ theme:
     - content.tabs.link
     - content.code.annotate
     - content.code.copy
-    - navigation.tabs
     - navigation.instant
     - navigation.instant.prefetch
     - navigation.instant.preview
