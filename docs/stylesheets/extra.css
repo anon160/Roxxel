@@ -1,4 +1,12 @@
 /* Enforce pure black background and header globally with high CSS specificity */
+body,
+body[data-md-color-scheme="slate"],
+.md-main,
+.md-content,
+html {
+  background-color: #000000 !important;
+}
+
 :root,
 [data-md-color-scheme="slate"] {
   --md-default-bg-color: #000000 !important;
@@ -8,14 +16,12 @@
   --md-header-bg-color: #000000 !important;
   --md-header-fg-color: #ffffff !important;
   
-  --md-primary-fg-color: #000000 !important;
-  --md-primary-fg-color--dark: #121212 !important;
-  
   --md-search-bg-color: #121212 !important;
   --md-code-bg-color: #1a1a1a !important;
 }
 
 /* Remove the header drop-shadow for a flat, modern aesthetic */
 .md-header {
+  background-color: #000000 !important;
   box-shadow: none !important;
 }
