@@ -281,7 +281,30 @@ class Roxxel:
         if len(self.filepaths) == 0:
             raise FileNotFoundError("No matching files found for the specified dataset path/pattern.")
 
+        # Resolve directory or prefix paths dynamically on open
+        resolved_paths = []
         for path in self.filepaths:
+            if os.path.isdir(path):
+                dir_shards = sorted(glob.glob(os.path.join(path, "*.rox")))
+                resolved_paths.extend(dir_shards)
+            elif not os.path.exists(path):
+                prefix = path[:-4] if path.endswith(".rox") else path
+                shards = sorted(glob.glob(f"{prefix}_*.rox"))
+                if not shards:
+                    shards = sorted(glob.glob(f"{prefix}*.rox"))
+                if shards:
+                    resolved_paths.extend(shards)
+                else:
+                    resolved_paths.append(path)
+            else:
+                resolved_paths.append(path)
+
+        if len(resolved_paths) == 0:
+            raise FileNotFoundError("No matching files found for the specified dataset path/pattern.")
+
+        self.filepaths = resolved_paths
+
+        for path in resolved_paths:
             if not os.path.exists(path):
                 raise FileNotFoundError(f"Missing dataset shard file at {path}.")
 
@@ -424,7 +447,7 @@ class Roxxel:
     # =====================================================================
     # API 3: UNIFIED SEQUENCE STREAMING ENGINE (NUMPY / JAX)
     # =====================================================================
-    def stream(self, seq_len=1024, batch_size=32, seed=42, start_step=0, completed_phases=None, total_steps=None, dtype=np.int32, mesh=None, data_sharding=None, mix_datasets=None, weights=None):
+    def stream(self, seq_len, batch_size, seed=42, start_step=0, completed_phases=None, total_steps=None, dtype=np.int32, mesh=None, data_sharding=None, mix_datasets=None, weights=None):
         """
         Streams from an open Roxxel instance with absolute bit-level determinism.
         Supports multi-phase curriculum training with N phases having different 

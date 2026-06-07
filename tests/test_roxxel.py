@@ -371,6 +371,51 @@ def test_mixer_multiphase_stream():
     clean_shards(base_name2)
     print("Unified Roxxel.stream mixing with Multiphase Resumption passed successfully!\n")
 
+def test_filepath_auto_resolution():
+    print("--- Testing Filepath Auto-Resolution ---")
+    base_name = "./test_resolution"
+    clean_shards(base_name)
+    
+    # 1. Write some test shards
+    sentences = ["Line 1 of dataset", "Line 2 of dataset"]
+    rox = Roxxel(filepath=f"{base_name}.rox")
+    rox.write(sentences, block_size=64, max_shard_bytes=80, separator=None)
+    
+    # Verify shards were created
+    shards = sorted(glob.glob(f"{base_name}_*.rox"))
+    assert len(shards) > 0
+    
+    # 2. Test prefix resolution without extension: "./test_resolution"
+    rox_prefix = Roxxel(filepath=base_name)
+    rox_prefix.open()
+    assert len(rox_prefix.filepaths) == len(shards)
+    assert rox_prefix.filepaths == shards
+    
+    # 3. Test prefix resolution with extension: "./test_resolution.rox"
+    rox_ext = Roxxel(filepath=f"{base_name}.rox")
+    rox_ext.open()
+    assert len(rox_ext.filepaths) == len(shards)
+    assert rox_ext.filepaths == shards
+
+    # 4. Test directory resolution
+    import tempfile
+    import shutil
+    
+    temp_dir = tempfile.mkdtemp()
+    try:
+        for shard in shards:
+            shutil.copy(shard, temp_dir)
+            
+        rox_dir = Roxxel(filepath=temp_dir)
+        rox_dir.open()
+        assert len(rox_dir.filepaths) == len(shards)
+        assert all(os.path.basename(f) in [os.path.basename(s) for s in shards] for f in rox_dir.filepaths)
+    finally:
+        shutil.rmtree(temp_dir)
+        
+    clean_shards(base_name)
+    print("Filepath Auto-Resolution passed successfully!\n")
+
 if __name__ == "__main__":
     test_fused_sharded_mode()
     test_int32_tokenized_dataset()
@@ -378,3 +423,4 @@ if __name__ == "__main__":
     test_incomplete_shard_recovery()
     test_multiphase_curriculum_stream()
     test_mixer_multiphase_stream()
+    test_filepath_auto_resolution()
