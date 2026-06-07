@@ -28,6 +28,7 @@ theme:
 
 nav:
   - Welcome: index.md
+  - Tutorial: tutorial.md
   - Dataloader & Streaming: dataloader_and_streaming.md
   - Checkpointing: checkpointing.md
   - Logging: logging.md
