@@ -252,9 +252,126 @@ def test_multiphase_curriculum_stream():
     clean_shards(base_name)
     print("Multiphase Curriculum Stream Resumption passed successfully!\n")
 
+def test_mixer_multiphase_stream():
+    print("--- Testing RoxxelMixer with Multiphase Resumption ---")
+    import jax
+    from roxxel import RoxxelMixer
+
+    base_name1 = "./test_mixer_ds1"
+    base_name2 = "./test_mixer_ds2"
+    clean_shards(base_name1)
+    clean_shards(base_name2)
+
+    # 1. Create two distinct datasets
+    tokens_ds1 = [np.arange(i * 64, (i + 1) * 64, dtype=np.int32) for i in range(8)]
+    tokens_ds2 = [np.arange(1000 + i * 64, 1000 + (i + 1) * 64, dtype=np.int32) for i in range(8)]
+
+    rox1 = Roxxel(filepath=f"{base_name1}_*.rox")
+    rox1.write(tokens_ds1, block_size=256, max_shard_bytes=10000, separator=None)
+    
+    rox2 = Roxxel(filepath=f"{base_name2}_*.rox")
+    rox2.write(tokens_ds2, block_size=256, max_shard_bytes=10000, separator=None)
+
+    # Load datasets
+    with Roxxel(filepath=f"{base_name1}_*.rox") as ds1, Roxxel(filepath=f"{base_name2}_*.rox") as ds2:
+        # Define weights
+        weights = {"ds1": 0.3, "ds2": 0.7}
+        mixer = RoxxelMixer(datasets={"ds1": ds1, "ds2": ds2}, weights=weights)
+
+        # Draw global choice simulation to verify manually
+        seed = 42
+        probs = [0.3, 0.7]
+        rng = np.random.default_rng(seed)
+        
+        # Max steps upper bound:
+        # ds1 has 8 * 64 = 512 tokens. At batch=4, seq=8 (32 tokens/step), individual max is 16 steps.
+        # ds2 has 512 tokens. Individual max is 16 steps.
+        # Total global steps bound: 16 + 16 = 32 steps.
+        # Plus any completed phase steps.
+        
+        # Let's stream from scratch: Phase 0 (5 steps, batch=4, seq=8)
+        stream_p0 = mixer.stream(seq_len=8, batch_size=4, seed=seed, start_step=0, total_steps=5)
+        assert len(stream_p0) == 5
+        batches_p0 = list(stream_p0)
+        assert len(batches_p0) == 5
+        assert isinstance(batches_p0[0], jax.Array)
+        assert batches_p0[0].shape == (4, 8)
+
+        # Convert back to numpy to inspect values
+        np_batches_p0 = [np.array(b) for b in batches_p0]
+        
+        # Resimulate choices for Phase 0
+        all_choices = rng.choice(2, size=32 + 5, p=probs)  # 32 is max_possible_global_steps
+        p0_choices = all_choices[0:5]
+        
+        # Verify choices
+        # Let's get independent local streams using seed+i+1
+        # seed for ds1: seed + 1 = 43
+        # seed for ds2: seed + 2 = 44
+        counts_p0 = np.bincount(p0_choices, minlength=2)
+        local_stream_ds1 = ds1.stream(seq_len=8, batch_size=4, seed=43, total_steps=counts_p0[0])
+        local_stream_ds2 = ds2.stream(seq_len=8, batch_size=4, seed=44, total_steps=counts_p0[1])
+        
+        expected_batches = []
+        for choice in p0_choices:
+            if choice == 0:
+                expected_batches.append(np.array(next(local_stream_ds1)))
+            else:
+                expected_batches.append(np.array(next(local_stream_ds2)))
+
+        for b_act, b_exp in zip(np_batches_p0, expected_batches):
+            assert np.array_equal(b_act, b_exp)
+
+        # Test Case: Resume Phase 1 at step 5
+        # Completed phases: [(5, 4, 8)]
+        # Phase 1: 3 steps, batch_size=2, seq_len=16
+        stream_p1 = mixer.stream(
+            seq_len=16, batch_size=2, seed=seed, start_step=5,
+            completed_phases=[(5, 4, 8)], total_steps=3
+        )
+        assert len(stream_p1) == 3
+        batches_p1 = list(stream_p1)
+        assert len(batches_p1) == 3
+        
+        # Resimulate local completed phase and start step allocation
+        # Phase 0: 5 steps
+        counts_p0 = np.bincount(all_choices[0:5], minlength=2)
+        # Current step starts at 5, so no steps in current phase are simulated before start_step
+        # Local start steps = 0 for the current phase (since start_step == global_accumulator)
+        # So we expect:
+        # local_completed_phases: ds1: [(counts_p0[0], 4, 8)], ds2: [(counts_p0[1], 4, 8)]
+        # local_start_steps: ds1: 0, ds2: 0
+        # Stream Phase 1: choices are all_choices[5:8]
+        p1_choices = all_choices[5:8]
+        counts_p1 = np.bincount(p1_choices, minlength=2)
+        
+        local_stream_p1_ds1 = ds1.stream(
+            seq_len=16, batch_size=2, seed=43, start_step=0,
+            completed_phases=[(counts_p0[0], 4, 8)], total_steps=counts_p1[0]
+        )
+        local_stream_p1_ds2 = ds2.stream(
+            seq_len=16, batch_size=2, seed=44, start_step=0,
+            completed_phases=[(counts_p0[1], 4, 8)], total_steps=counts_p1[1]
+        )
+        
+        expected_batches_p1 = []
+        for choice in p1_choices:
+            if choice == 0:
+                expected_batches_p1.append(np.array(next(local_stream_p1_ds1)))
+            else:
+                expected_batches_p1.append(np.array(next(local_stream_p1_ds2)))
+
+        for b_act, b_exp in zip(batches_p1, expected_batches_p1):
+            assert np.array_equal(np.array(b_act), b_exp)
+
+    clean_shards(base_name1)
+    clean_shards(base_name2)
+    print("RoxxelMixer with Multiphase Resumption passed successfully!\n")
+
 if __name__ == "__main__":
     test_fused_sharded_mode()
     test_int32_tokenized_dataset()
     test_logger()
     test_incomplete_shard_recovery()
     test_multiphase_curriculum_stream()
+    test_mixer_multiphase_stream()
