@@ -1,29 +1,15 @@
-# Roxxel API Reference 🚀
+# Roxxel 🚀
 
-Welcome to the auto-generated API documentation for **Roxxel**: a zero-RAM, JAX-centric dataloading, streaming, and asynchronous checkpointing & logging toolkit.
+Welcome to the documentation for **Roxxel**: a zero-RAM, JAX-centric dataloading, streaming, and asynchronous checkpointing & logging toolkit.
 
-For getting started, installation guides, and complete pre-training cookbooks, see the [Roxxel README](https://github.com/anon160/Roxxel).
-
----
-
-## Core Dataloader
-
-::: roxxel.core.Roxxel
-    options:
-      show_root_heading: true
+Roxxel is designed specifically for large-scale deep learning pipelines using JAX & Flax NNX. It provides OS-level memory mapping, zero-copy sharded device streaming, background model checkpointing, and thread-safe distributed logging.
 
 ---
 
-## Asynchronous Logging
+## Navigation
 
-::: roxxel.logging.Logger
-    options:
-      show_root_heading: true
+* **[Dataloader & Streaming](dataloader_and_streaming.md)**: Zero-RAM block loading and JAX-native multi-device data placement.
+* **[Asynchronous Checkpointing](checkpointing.md)**: Non-blocking weight and optimizer state preservation using Orbax.
+* **[Asynchronous Logging](logging.md)**: Zero-overhead logging with multi-host safety and automatic traceback capture.
 
----
-
-## Asynchronous Checkpointing
-
-::: roxxel.checkpoint.Checkpointer
-    options:
-      show_root_heading: true
+For installation instructions and complete pre-training cookbooks, see the [Roxxel README](https://github.com/anon160/Roxxel).

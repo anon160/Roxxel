@@ -24,6 +24,12 @@ theme:
     - navigation.expand
     - content.code.copy
 
+nav:
+  - Welcome: index.md
+  - Dataloader & Streaming: dataloader_and_streaming.md
+  - Asynchronous Checkpointing: checkpointing.md
+  - Asynchronous Logging: logging.md
+
 plugins:
   - search
   - mkdocstrings:
