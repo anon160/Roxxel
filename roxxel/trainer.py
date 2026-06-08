@@ -1,3 +1,4 @@
+import os
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -58,6 +59,7 @@ class Trainer:
         optimizer,
         curriculum: Curriculum,
         loss_fn,
+        save_path=None,
         checkpointer=None,
         logger=None,
         eval_fn=None,
@@ -79,6 +81,9 @@ class Trainer:
                 pre-constructed state is passed as the first argument.
             curriculum (Curriculum): The curriculum schedule object.
             loss_fn (callable): The loss function: loss_fn(model, batch) -> scalar or tuple (loss, aux).
+            save_path (str, optional): The root directory where checkpoints and logs are saved.
+                If provided, `checkpointer` defaults to `save_path/checkpoints` and `logger`
+                defaults to `save_path`.
             checkpointer (Checkpointer, str, optional): Asynchronous Checkpointer instance
                 or directory path to automatically initialize it.
             logger (Logger, str, optional): Asynchronous Logger instance or directory
@@ -112,6 +117,13 @@ class Trainer:
         self.seed = seed
         self.mesh = mesh
         self.data_sharding = data_sharding
+
+        # Merge checkpointer and logger if save_path is provided
+        if save_path is not None:
+            if checkpointer is None:
+                checkpointer = os.path.join(save_path, "checkpoints")
+            if logger is None:
+                logger = save_path
 
         # Handle Checkpointer initialization
         self._own_checkpointer = False

@@ -8,7 +8,7 @@ It handles training loops, dynamic sequence and batch transitions, metric loggin
 
 ## Easiest Trainer Configuration
 
-With Roxxel, you do not need to write custom training states, or explicitly instantiate checkpointers and loggers. Simply supply your model, optimizer, curriculum, and a `loss_fn`, along with directory paths for checkpoints and system logs.
+With Roxxel, you do not need to write custom training states, or explicitly instantiate checkpointers and loggers. Simply supply your model, optimizer, curriculum, and a `loss_fn`, along with a unified `save_path` directory.
 
 ```python
 import jax
@@ -32,14 +32,13 @@ def loss_fn(model, batch):
     return jax.numpy.mean((logits - targets) ** 2)
 
 # 4. Initialize the Trainer
-# Setting paths for logger and checkpointer automatically initializes them
+# Setting save_path automatically initializes the checkpointer and logger
 trainer = Trainer(
     model=model,
     optimizer=optimizer,
     curriculum=curriculum,
     loss_fn=loss_fn,
-    checkpointer="./checkpoints",
-    logger="./run_logs",
+    save_path="./run_delta",
     checkpoint_every=100,
     log_every=10
 )
@@ -71,10 +70,13 @@ The `Trainer` automatically defines and compiles a standard Flax JIT training st
 If your `loss_fn` returns multiple outputs (e.g. `(loss, aux_data)` or `{"loss": loss, "accuracy": acc}`), `Trainer` wraps it using `loss_wrapper` to ensure only the scalar loss is supplied to JAX gradient compilation, avoiding JAX compiler errors while preserving metrics.
 
 ### 4. Automatic Resource Management
-If `logger` or `checkpointer` is passed as a directory path:
-- The trainer initializes them internally.
-- It executes training within the logger's asynchronous context manager to ensure system logs and metrics are flushed to disk even in the event of an OOM or hardware crash.
-- It safely closes and flushes all Orbax checkpointers during final cleanup.
+If `save_path` is passed, the trainer automatically initializes:
+- A `Checkpointer` located in `save_path/checkpoints`.
+- A `Logger` saving metrics and system logs directly inside `save_path`.
+
+Alternatively, you can pass custom checkpointer and logger instances or individual overrides as paths directly to `checkpointer` and `logger` arguments.
+
+The trainer automatically executes all process-critical training steps within the logger's asynchronous context manager to guarantee tracebacks are logged and flushing occurs even during training crashes. It also executes asynchronous checkpointer flushes and close routines in final cleanup hooks.
 
 ---
 

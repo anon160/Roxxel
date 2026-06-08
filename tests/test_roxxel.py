@@ -486,8 +486,7 @@ def test_curriculum_trainer():
     def mock_loss_fn(model, batch):
         return jnp.sum(model(batch)) * 0.0
         
-    temp_dir_logs = tempfile.mkdtemp()
-    temp_dir_ckpt = tempfile.mkdtemp()
+    temp_dir = tempfile.mkdtemp()
     
     try:
         with Roxxel(filepath=f"{base_name}_*.rox") as ds:
@@ -502,8 +501,7 @@ def test_curriculum_trainer():
                 optimizer=optimizer,
                 curriculum=curriculum,
                 loss_fn=mock_loss_fn,
-                logger=temp_dir_logs,
-                checkpointer=temp_dir_ckpt,
+                save_path=temp_dir,
                 log_every=1,
                 checkpoint_every=2,
                 eval_every=2,
@@ -520,11 +518,12 @@ def test_curriculum_trainer():
             assert int(trainer.state.step.value) == 5
             
             # Verify logger created files
-            assert os.path.exists(os.path.join(temp_dir_logs, "roxxel_system.log"))
+            assert os.path.exists(os.path.join(temp_dir, "roxxel_system.log"))
+            # Verify checkpointer created checkpoint directory
+            assert os.path.exists(os.path.join(temp_dir, "checkpoints"))
             
     finally:
-        shutil.rmtree(temp_dir_logs)
-        shutil.rmtree(temp_dir_ckpt)
+        shutil.rmtree(temp_dir)
         clean_shards(base_name)
 
 if __name__ == "__main__":
