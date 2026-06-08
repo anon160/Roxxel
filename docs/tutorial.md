@@ -78,21 +78,13 @@ def sample_now(state: XenronState) -> str:
     """Mock sampling function for step evaluation."""
     return f"[Decoded Text from step {int(state.step.value)}]: Once upon a time in a JAX device cluster..."
 
-# Define JIT-compiled train step
-@nnx.jit
-def train_step(state: XenronState, batch: jax.Array) -> dict:
-    def loss_fn(model):
-        # Predict next tokens (causal shift)
-        logits = model(batch[:, :-1])
-        targets = batch[:, 1:]
-        loss = optax.softmax_cross_entropy_with_integer_labels(logits, targets).mean()
-        return loss
-    
-    loss, grads = nnx.value_and_grad(loss_fn)(state.model)
-    state.optimizer.update(grads)
-    state.step.value += 1
-    
-    return {"loss": loss, "ppl": jnp.exp(loss)}
+# Define loss function
+def loss_fn(model, batch):
+    # Predict next tokens (causal shift)
+    logits = model(batch[:, :-1])
+    targets = batch[:, 1:]
+    loss = optax.softmax_cross_entropy_with_integer_labels(logits, targets).mean()
+    return loss
 
 # --- 5. MAIN TRAINING EXECUTION ---
 def main():
@@ -156,7 +148,7 @@ def main():
             state=state,
             optimizer=optimizer,
             curriculum=curriculum,
-            train_step_fn=train_step,
+            loss_fn=loss_fn,
             checkpointer=handler,
             logger=logger,
             eval_fn=sample_now,

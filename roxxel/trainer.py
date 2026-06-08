@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+from flax import nnx
 from roxxel.core import Roxxel, RoxxelStream
 
 class Phase:
@@ -46,7 +47,7 @@ class Trainer:
         state,
         optimizer,
         curriculum: Curriculum,
-        train_step_fn,
+        loss_fn,
         checkpointer=None,
         logger=None,
         eval_fn=None,
@@ -62,7 +63,7 @@ class Trainer:
             state: The JAX training state (typically containing the model).
             optimizer: The Optax optimizer/Flax NNX optimizer instance.
             curriculum (Curriculum): The curriculum schedule object.
-            train_step_fn: The JIT-compiled train step function: train_step_fn(state, batch) -> metrics_dict.
+            loss_fn: The loss function: loss_fn(model, batch) -> scalar or tuple (loss, aux).
             checkpointer (Checkpointer, optional): Asynchronous Checkpointer instance.
             logger (Logger, optional): Asynchronous Logger instance.
             eval_fn (callable, optional): Callback for periodic evaluations: eval_fn(state) -> str/None.
@@ -76,7 +77,7 @@ class Trainer:
         self.state = state
         self.optimizer = optimizer
         self.curriculum = curriculum
-        self.train_step_fn = train_step_fn
+        self.loss_fn = loss_fn
         self.checkpointer = checkpointer
         self.logger = logger
         self.eval_fn = eval_fn
@@ -86,6 +87,33 @@ class Trainer:
         self.seed = seed
         self.mesh = mesh
         self.data_sharding = data_sharding
+
+        # Build and JIT compile the training step internally
+        @nnx.jit
+        def train_step(state, batch):
+            def loss_wrapper(model):
+                out = self.loss_fn(model, batch)
+                # Ensure only the scalar loss is returned for gradients
+                if isinstance(out, (tuple, list)):
+                    return out[0]
+                elif isinstance(out, dict):
+                    if "loss" in out:
+                        return out["loss"]
+                    return next(iter(out.values()))
+                return out
+                
+            loss, grads = nnx.value_and_grad(loss_wrapper)(state.model)
+            try:
+                state.optimizer.update(state.model, grads)
+            except TypeError:
+                state.optimizer.update(grads)
+            try:
+                state.step[...] += 1
+            except (TypeError, ValueError, AttributeError):
+                state.step.value += 1
+            return {"loss": loss, "ppl": jnp.exp(loss)}
+            
+        self.train_step_fn = train_step
 
     def run(self):
         """
@@ -98,8 +126,12 @@ class Trainer:
             start_step = self.checkpointer.restore()
             
         # Update JAX-state step counter
-        if hasattr(self.state, "step") and hasattr(self.state.step, "value"):
-            self.state.step.value = jnp.array(start_step, dtype=jnp.int32)
+        if hasattr(self.state, "step"):
+            try:
+                self.state.step[...] = jnp.array(start_step, dtype=jnp.int32)
+            except (TypeError, ValueError, AttributeError):
+                if hasattr(self.state.step, "value"):
+                    self.state.step.value = jnp.array(start_step, dtype=jnp.int32)
             
         # 2. Determine initial curriculum configuration window
         accumulated_steps = 0
@@ -173,21 +205,27 @@ class Trainer:
                 for batch in loader_stream:
                     metrics = self.train_step_fn(self.state, batch)
                     
-                    if hasattr(self.state, "step") and hasattr(self.state.step, "value"):
-                        curr_step = int(self.state.step.value)
+                    if hasattr(self.state, "step"):
+                        try:
+                            curr_step = int(self.state.step.value)
+                        except (TypeError, ValueError, AttributeError):
+                            try:
+                                curr_step = int(self.state.step)
+                            except (TypeError, ValueError, AttributeError):
+                                curr_step += 1
                     else:
                         curr_step += 1
                         
                     # 1. Asynchronous system logging
                     if curr_step % self.log_every == 0 and self.logger:
-                        loss = float(metrics.get("loss", 0.0))
-                        ppl = float(metrics.get("ppl", 0.0))
-                        self.logger.log_message(f"S{curr_step} | Loss: {loss:.4f} | PPL: {ppl:.2f}")
-                        self.logger.log_metrics_summary(step=curr_step, metrics={"loss": loss, "perplexity": ppl})
+                        loss_val = float(metrics["loss"])
+                        ppl = float(metrics["ppl"])
+                        self.logger.log_message(f"S{curr_step} | Loss: {loss_val:.4f} | PPL: {ppl:.2f}")
+                        self.logger.log_metrics_summary(step=curr_step, metrics={"loss": loss_val, "perplexity": ppl})
                         
                     # 2. Asynchronous checkpointing
                     if curr_step % self.checkpoint_every == 0 and self.checkpointer:
-                        self.checkpointer.save(curr_step, metrics_dict={"loss": metrics.get("loss", 999.0)})
+                        self.checkpointer.save(curr_step, metrics_dict={"loss": float(metrics["loss"])})
                         
                     # 3. Model sampling/evaluation
                     if self.eval_fn and curr_step % self.eval_every == 0:

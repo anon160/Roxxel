@@ -460,6 +460,10 @@ def test_mixer_exhaustion_renormalization():
 def test_curriculum_trainer():
     print("--- Testing Curriculum Trainer ---")
     from roxxel.trainer import Phase, Curriculum, Trainer
+    from flax import nnx
+    import optax
+    import jax.numpy as jnp
+
     base_name = "./test_trainer_ds"
     clean_shards(base_name)
     
@@ -467,17 +471,25 @@ def test_curriculum_trainer():
     rox = Roxxel(filepath=f"{base_name}_*.rox")
     rox.write(tokens, separator=None, block_size=256, max_shard_bytes=10000)
     
-    class DummyState:
+    class SimpleModel(nnx.Module):
         def __init__(self):
-            class Step:
-                value = 0
-            self.step = Step()
-            
-    state = DummyState()
+            self.w = nnx.Param(jnp.array([1.0]))
+        def __call__(self, x):
+            return jnp.sum(x.astype(jnp.float32)) * self.w
+
+    class TrainingState(nnx.Module):
+        def __init__(self, model, optimizer):
+            self.model = model
+            self.optimizer = optimizer
+            self.step = nnx.Variable(jnp.array(0, dtype=jnp.int32))
+
+    model = SimpleModel()
+    tx = optax.sgd(0.01)
+    optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
+    state = TrainingState(model, optimizer)
     
-    def mock_train_step(st, batch):
-        st.step.value += 1
-        return {"loss": 0.5, "ppl": 1.6}
+    def mock_loss_fn(model, batch):
+        return jnp.sum(model(batch)) * 0.0
         
     with Roxxel(filepath=f"{base_name}_*.rox") as ds:
         phases = [
@@ -488,9 +500,9 @@ def test_curriculum_trainer():
         
         trainer = Trainer(
             state=state,
-            optimizer=None,
+            optimizer=optimizer,
             curriculum=curriculum,
-            train_step_fn=mock_train_step,
+            loss_fn=mock_loss_fn,
             log_every=1,
             checkpoint_every=2,
             eval_every=2,
@@ -498,7 +510,7 @@ def test_curriculum_trainer():
             seed=42
         )
         trainer.run()
-        assert state.step.value == 5
+        assert int(state.step.value) == 5
         
     clean_shards(base_name)
     print("Curriculum Trainer test passed successfully!\n")
