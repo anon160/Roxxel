@@ -34,6 +34,16 @@ class Curriculum:
         self.phases = phases
         self.mix_streamers = mix_streamers
 
+class ModelState(nnx.Module):
+    """
+    Unified JAX/Flax NNX state module containing the model, optimizer,
+    and step counter. Created internally by the Trainer.
+    """
+    def __init__(self, model: nnx.Module, optimizer: nnx.Optimizer):
+        self.model = model
+        self.optimizer = optimizer
+        self.step = nnx.Variable(jnp.array(0, dtype=jnp.int32))
+
 class Trainer:
     """
     Curriculum-aware pre-training orchestrator designed for JAX/Flax NNX.
@@ -44,7 +54,7 @@ class Trainer:
     """
     def __init__(
         self,
-        state,
+        model,
         optimizer,
         curriculum: Curriculum,
         loss_fn,
@@ -57,15 +67,22 @@ class Trainer:
         seed: int = 42,
         mesh=None,
         data_sharding=None,
+        max_to_keep: int = 3,
+        timeout: int = 1000,
     ):
         """
         Args:
-            state: The JAX training state (typically containing the model).
-            optimizer: The Optax optimizer/Flax NNX optimizer instance.
+            model: The JAX training state / model instance. If a pre-constructed state
+                object containing `model` and `optimizer` attributes is passed, the trainer
+                automatically detects it for backward compatibility.
+            optimizer: The Optax optimizer/Flax NNX optimizer instance. Can be None if a
+                pre-constructed state is passed as the first argument.
             curriculum (Curriculum): The curriculum schedule object.
             loss_fn: The loss function: loss_fn(model, batch) -> scalar or tuple (loss, aux).
-            checkpointer (Checkpointer, optional): Asynchronous Checkpointer instance.
-            logger (Logger, optional): Asynchronous Logger instance.
+            checkpointer (Checkpointer, str, optional): Asynchronous Checkpointer instance
+                or directory path to automatically initialize it.
+            logger (Logger, str, optional): Asynchronous Logger instance or directory
+                path to automatically initialize it.
             eval_fn (callable, optional): Callback for periodic evaluations: eval_fn(state) -> str/None.
             eval_every (int, optional): Run evaluations every N steps. Defaults to 500.
             checkpoint_every (int, optional): Save checkpoint every N steps. Defaults to 100.
@@ -73,13 +90,21 @@ class Trainer:
             seed (int, optional): Base random seed for stream replication. Defaults to 42.
             mesh (jax.sharding.Mesh, optional): JAX hardware mesh sharding specification.
             data_sharding (jax.sharding.NamedSharding, optional): JAX named sharding specification.
+            max_to_keep (int, optional): Max checkpoints to keep when initializing checkpointer path. Defaults to 3.
+            timeout (int, optional): Timeout for async operations when initializing checkpointer path. Defaults to 1000.
         """
-        self.state = state
-        self.optimizer = optimizer
+        # Check if the first parameter is actually a state object
+        if hasattr(model, "model") and hasattr(model, "optimizer"):
+            self.state = model
+            self.model = model.model
+            self.optimizer = optimizer if optimizer is not None else model.optimizer
+        else:
+            self.model = model
+            self.optimizer = optimizer
+            self.state = ModelState(model, optimizer)
+
         self.curriculum = curriculum
         self.loss_fn = loss_fn
-        self.checkpointer = checkpointer
-        self.logger = logger
         self.eval_fn = eval_fn
         self.eval_every = eval_every
         self.checkpoint_every = checkpoint_every
@@ -87,6 +112,30 @@ class Trainer:
         self.seed = seed
         self.mesh = mesh
         self.data_sharding = data_sharding
+
+        # Handle Checkpointer initialization
+        self._own_checkpointer = False
+        if isinstance(checkpointer, str):
+            from roxxel.checkpoint import Checkpointer
+            self.checkpointer = Checkpointer(
+                checkpoint_path=checkpointer,
+                model=self.model,
+                optimizer=self.optimizer,
+                max_to_keep=max_to_keep,
+                timeout=timeout
+            )
+            self._own_checkpointer = True
+        else:
+            self.checkpointer = checkpointer
+
+        # Handle Logger initialization
+        self._own_logger = False
+        if isinstance(logger, str):
+            from roxxel.logging import Logger
+            self.logger = Logger(log_dir=logger)
+            self._own_logger = True
+        else:
+            self.logger = logger
 
         # Build and JIT compile the training step internally
         @nnx.jit
@@ -120,6 +169,13 @@ class Trainer:
         Executes the curriculum training loop, automatically handling skips, resumptions,
         blending weights, and dynamic shape transitions at phase boundaries.
         """
+        if self._own_logger and self.logger:
+            with self.logger:
+                self._run()
+        else:
+            self._run()
+
+    def _run(self):
         # 1. Restore checkpoints if available
         start_step = 0
         if self.checkpointer:
@@ -273,5 +329,17 @@ class Trainer:
                         break
         finally:
             dataset.close()
+            if self._own_checkpointer and self.checkpointer:
+                # Wait for any pending async checkpoint saves to finish
+                if hasattr(self.checkpointer, "mngr") and hasattr(self.checkpointer.mngr, "wait_until_finished"):
+                    try:
+                        self.checkpointer.mngr.wait_until_finished()
+                    except Exception:
+                        pass
+                if hasattr(self.checkpointer, "mngr") and hasattr(self.checkpointer.mngr, "close"):
+                    try:
+                        self.checkpointer.mngr.close()
+                    except Exception:
+                        pass
             if self.logger:
                 self.logger.log_message("✅ Global Multi-Phase Execution Complete. Roxxel Instance Closed Safely.")

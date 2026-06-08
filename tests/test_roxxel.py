@@ -459,10 +459,12 @@ def test_mixer_exhaustion_renormalization():
 
 def test_curriculum_trainer():
     print("--- Testing Curriculum Trainer ---")
-    from roxxel.trainer import Phase, Curriculum, Trainer
+    from roxxel.trainer import Phase, Curriculum, Trainer, ModelState
     from flax import nnx
     import optax
     import jax.numpy as jnp
+    import tempfile
+    import shutil
 
     base_name = "./test_trainer_ds"
     clean_shards(base_name)
@@ -477,43 +479,53 @@ def test_curriculum_trainer():
         def __call__(self, x):
             return jnp.sum(x.astype(jnp.float32)) * self.w
 
-    class TrainingState(nnx.Module):
-        def __init__(self, model, optimizer):
-            self.model = model
-            self.optimizer = optimizer
-            self.step = nnx.Variable(jnp.array(0, dtype=jnp.int32))
-
     model = SimpleModel()
     tx = optax.sgd(0.01)
     optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
-    state = TrainingState(model, optimizer)
     
     def mock_loss_fn(model, batch):
         return jnp.sum(model(batch)) * 0.0
         
-    with Roxxel(filepath=f"{base_name}_*.rox") as ds:
-        phases = [
-            Phase(steps=2, batch_size=2, seq_len=8),
-            Phase(steps=3, batch_size=1, seq_len=16)
-        ]
-        curriculum = Curriculum(primary_streamer=ds, phases=phases)
-        
-        trainer = Trainer(
-            state=state,
-            optimizer=optimizer,
-            curriculum=curriculum,
-            loss_fn=mock_loss_fn,
-            log_every=1,
-            checkpoint_every=2,
-            eval_every=2,
-            eval_fn=lambda st: "mock_eval",
-            seed=42
-        )
-        trainer.run()
-        assert int(state.step.value) == 5
-        
-    clean_shards(base_name)
-    print("Curriculum Trainer test passed successfully!\n")
+    temp_dir_logs = tempfile.mkdtemp()
+    temp_dir_ckpt = tempfile.mkdtemp()
+    
+    try:
+        with Roxxel(filepath=f"{base_name}_*.rox") as ds:
+            phases = [
+                Phase(steps=2, batch_size=2, seq_len=8),
+                Phase(steps=3, batch_size=1, seq_len=16)
+            ]
+            curriculum = Curriculum(primary_streamer=ds, phases=phases)
+            
+            trainer = Trainer(
+                model=model,
+                optimizer=optimizer,
+                curriculum=curriculum,
+                loss_fn=mock_loss_fn,
+                logger=temp_dir_logs,
+                checkpointer=temp_dir_ckpt,
+                log_every=1,
+                checkpoint_every=2,
+                eval_every=2,
+                eval_fn=lambda st: "mock_eval",
+                seed=42
+            )
+            
+            # Verify internal ModelState is instantiated
+            assert isinstance(trainer.state, ModelState)
+            
+            trainer.run()
+            
+            # Verify steps executed
+            assert int(trainer.state.step.value) == 5
+            
+            # Verify logger created files
+            assert os.path.exists(os.path.join(temp_dir_logs, "roxxel_system.log"))
+            
+    finally:
+        shutil.rmtree(temp_dir_logs)
+        shutil.rmtree(temp_dir_ckpt)
+        clean_shards(base_name)
 
 if __name__ == "__main__":
     test_fused_sharded_mode()

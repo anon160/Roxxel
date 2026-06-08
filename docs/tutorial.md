@@ -37,10 +37,9 @@ from flax import nnx
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 from jax.experimental import mesh_utils
 
-from roxxel import Roxxel, Logger, Phase, Curriculum, Trainer
-from roxxel.checkpoint import Checkpointer
+from roxxel import Roxxel, Phase, Curriculum, Trainer
 
-# --- 1. DEFINE ARCHITECTURE AND STATE ---
+# --- 1. DEFINE ARCHITECTURE ---
 class Xenron(nnx.Module):
     """Xenron model architecture."""
     def __init__(self, num_layers: int, rngs: nnx.Rngs):
@@ -49,13 +48,6 @@ class Xenron(nnx.Module):
         
     def __call__(self, x):
         return self.linear(self.embed(x))
-
-class XenronState(nnx.Module):
-    """Unified module wrapping model state, optimizer, and training step count."""
-    def __init__(self, model: Xenron, optimizer: nnx.Optimizer):
-        self.model = model
-        self.optimizer = optimizer
-        self.step = nnx.Variable(jnp.array(0, dtype=jnp.int32))
 
 # --- 2. COMPILE TOY DATASET ---
 def token_generator():
@@ -74,9 +66,9 @@ LR = 3e-4
 checkpoint_path = "./checkpoints"
 
 # --- 4. SAMPLING AND TRAINING FUNCTIONS ---
-def sample_now(state: XenronState) -> str:
+def sample_now(state) -> str:
     """Mock sampling function for step evaluation."""
-    return f"[Decoded Text from step {int(state.step.value)}]: Once upon a time in a JAX device cluster..."
+    return f"[Decoded Text from step {int(state.step[...])}]: Once upon a time in a JAX device cluster..."
 
 # Define loss function
 def loss_fn(model, batch):
@@ -88,11 +80,10 @@ def loss_fn(model, batch):
 
 # --- 5. MAIN TRAINING EXECUTION ---
 def main():
-    with Logger(log_dir="run_delta") as logger:
-        logger.log_message("🚀 Initializing Distributed Pre-training Cluster...")
+    print("🚀 Initializing Distributed Pre-training Cluster...")
 
-        # Initialize model
-        rngs = nnx.Rngs(GLOBAL_SEED)
+    # Initialize model
+    rngs = nnx.Rngs(GLOBAL_SEED)
         model = Xenron(4, rngs)
 
         # Distributed hardware sharding paths
@@ -138,19 +129,16 @@ def main():
         )
 
         optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
-        state = XenronState(model, optimizer)
 
-        # 4. Instantiate async Orbax checkpointer
-        handler = Checkpointer(checkpoint_path, state, optimizer)
-
-        # 5. Define Trainer orchestrator
+        # 4. Define Trainer orchestrator
+        # The Trainer automatically initializes the async Checkpointer, Logger, and ModelState internally
         trainer = Trainer(
-            state=state,
+            model=model,
             optimizer=optimizer,
             curriculum=curriculum,
             loss_fn=loss_fn,
-            checkpointer=handler,
-            logger=logger,
+            checkpointer=checkpoint_path,
+            logger="run_delta",
             eval_fn=sample_now,
             eval_every=500,
             checkpoint_every=100,
@@ -160,7 +148,7 @@ def main():
             data_sharding=data_sharding
         )
 
-        # 6. Execute training
+        # 5. Execute training
         trainer.run()
 
 if __name__ == "__main__":
