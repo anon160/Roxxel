@@ -28,15 +28,37 @@ class RoxxelStream:
         self._thread = None
         self._exception = None
         self._started = False
+        self._stop_event = threading.Event()
 
     def _prefetch_worker(self):
         try:
             for item in self.generator:
-                self._queue.put(item)
-            self._queue.put(None)  # Sentinel for completion
+                if self._stop_event.is_set():
+                    break
+                
+                # Block until we can put the item, checking for cancellation
+                while not self._stop_event.is_set():
+                    try:
+                        self._queue.put(item, timeout=0.1)
+                        break
+                    except queue.Full:
+                        continue
+                        
+            if not self._stop_event.is_set():
+                while not self._stop_event.is_set():
+                    try:
+                        self._queue.put(None, timeout=0.1)  # Sentinel
+                        break
+                    except queue.Full:
+                        continue
         except Exception as e:
             self._exception = e
-            self._queue.put(None)
+            while not self._stop_event.is_set():
+                try:
+                    self._queue.put(None, timeout=0.1)
+                    break
+                except queue.Full:
+                    continue
 
     def __iter__(self):
         if not self._started and self.prefetch_size > 0:
@@ -57,6 +79,15 @@ class RoxxelStream:
             return item
         else:
             return next(self.generator)
+
+    def close(self):
+        self._stop_event.set()
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(timeout=1.0)
+        self._thread = None
+            
+    def __del__(self):
+        self.close()
 
     def __len__(self):
         return self.total_steps
@@ -745,29 +776,51 @@ class Roxxel:
 
         def batch_generator():
             record_ptr = 0
-            reservoir = bytearray()
+            leftover_chunk = None
             
-            # Pre-fill reservoir with the remaining bytes of the partially consumed block
+            # Pre-fill leftover chunk
             if remainder_bytes > 0 and record_ptr < len(global_indices):
                 idx = global_indices[record_ptr]
                 raw_slice = self[int(idx)]
-                reservoir.extend(raw_slice.tobytes()[remainder_bytes:])
+                leftover_chunk = raw_slice[remainder_bytes:]
                 record_ptr += 1
             
             for _ in range(total_steps):
-                while len(reservoir) < total_bytes_per_batch:
+                chunks = []
+                collected_bytes = 0
+                
+                if leftover_chunk is not None:
+                    chunks.append(leftover_chunk)
+                    collected_bytes += len(leftover_chunk)
+                    leftover_chunk = None
+                    
+                while collected_bytes < total_bytes_per_batch:
                     if record_ptr >= len(global_indices):
                         return
                     idx = global_indices[record_ptr]
                     raw_slice = self[int(idx)]
-                    reservoir.extend(raw_slice.tobytes())
+                    chunks.append(raw_slice)
+                    collected_bytes += len(raw_slice)
                     record_ptr += 1
                     
-                chunk = reservoir[:total_bytes_per_batch]
-                del reservoir[:total_bytes_per_batch]
+                if len(chunks) == 1:
+                    full_chunk = chunks[0]
+                else:
+                    full_chunk = np.concatenate(chunks)
                 
+                if collected_bytes > total_bytes_per_batch:
+                    leftover_chunk = full_chunk[total_bytes_per_batch:]
+                    full_chunk = full_chunk[:total_bytes_per_batch]
+                
+                # full_chunk is guaranteed to be contiguous uint8 array here
                 # Parse using the dataset's native dtype, then cast to target training dtype
-                flat_tokens = np.frombuffer(chunk, dtype=native_dtype).astype(dtype)
+                # Using numpy views to avoid multiple expensive python string/byte copies
+                try:
+                    flat_tokens = full_chunk.view(native_dtype).astype(dtype)
+                except ValueError:
+                    # Fallback if alignment somehow prevents .view()
+                    flat_tokens = np.frombuffer(full_chunk.tobytes(), dtype=native_dtype).astype(dtype)
+                    
                 numpy_batch = flat_tokens.reshape(batch_size, seq_len)
                 
                 # Yield high-performance JAX device array
