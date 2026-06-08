@@ -30,6 +30,8 @@ nav:
   - Welcome: index.md
   - Tutorial: tutorial.md
   - Dataloader & Streaming: dataloader_and_streaming.md
+  - Curriculum Blending: curriculum.md
+  - Training & Orchestration: trainer.md
   - Checkpointing: checkpointing.md
   - Logging: logging.md
 

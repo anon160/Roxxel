@@ -72,13 +72,13 @@ class Trainer:
     ):
         """
         Args:
-            model: The JAX training state / model instance. If a pre-constructed state
+            model (flax.nnx.Module): The JAX training state / model instance. If a pre-constructed state
                 object containing `model` and `optimizer` attributes is passed, the trainer
                 automatically detects it for backward compatibility.
-            optimizer: The Optax optimizer/Flax NNX optimizer instance. Can be None if a
+            optimizer (flax.nnx.Optimizer): The Optax optimizer/Flax NNX optimizer instance. Can be None if a
                 pre-constructed state is passed as the first argument.
             curriculum (Curriculum): The curriculum schedule object.
-            loss_fn: The loss function: loss_fn(model, batch) -> scalar or tuple (loss, aux).
+            loss_fn (callable): The loss function: loss_fn(model, batch) -> scalar or tuple (loss, aux).
             checkpointer (Checkpointer, str, optional): Asynchronous Checkpointer instance
                 or directory path to automatically initialize it.
             logger (Logger, str, optional): Asynchronous Logger instance or directory
