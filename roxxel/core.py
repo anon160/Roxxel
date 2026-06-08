@@ -2,28 +2,61 @@ import os
 import glob
 import struct
 import bisect
+import queue
+import threading
 import numpy as np
 import jax
 
 class RoxxelStream:
     """
-    A thin wrapper around the Python generator returned by stream() 
-    that exposes the exact __len__ of the training steps in the stream.
+    A wrapper around the Python generator returned by stream() that exposes 
+    the exact __len__ of training steps and prefetches batches asynchronously
+    on a background thread to eliminate data starvation on accelerators.
     """
-    def __init__(self, generator, total_steps):
+    def __init__(self, generator, total_steps, prefetch_size: int = 4):
         """
         Args:
             generator: The underlying generator yielding batches.
             total_steps (int): The total number of steps in this stream.
+            prefetch_size (int): The number of batches to prefetch asynchronously.
+                Set to 0 to disable prefetching. Defaults to 4.
         """
         self.generator = generator
         self.total_steps = total_steps
+        self.prefetch_size = prefetch_size
+        self._queue = queue.Queue(maxsize=prefetch_size) if prefetch_size > 0 else None
+        self._thread = None
+        self._exception = None
+        self._started = False
+
+    def _prefetch_worker(self):
+        try:
+            for item in self.generator:
+                self._queue.put(item)
+            self._queue.put(None)  # Sentinel for completion
+        except Exception as e:
+            self._exception = e
+            self._queue.put(None)
 
     def __iter__(self):
+        if not self._started and self.prefetch_size > 0:
+            self._started = True
+            self._thread = threading.Thread(target=self._prefetch_worker, daemon=True)
+            self._thread.start()
         return self
 
     def __next__(self):
-        return next(self.generator)
+        if self.prefetch_size > 0:
+            if not self._started:
+                self.__iter__()
+            item = self._queue.get()
+            if self._exception is not None:
+                raise self._exception
+            if item is None:
+                raise StopIteration
+            return item
+        else:
+            return next(self.generator)
 
     def __len__(self):
         return self.total_steps
@@ -477,7 +510,7 @@ class Roxxel:
     # =====================================================================
     # API 3: UNIFIED SEQUENCE STREAMING ENGINE (NUMPY / JAX)
     # =====================================================================
-    def stream(self, seq_len: int, batch_size: int, seed: int, start_step: int = 0, completed_phases: list = None, total_steps: int = None, dtype = np.int32, mesh = None, data_sharding = None, mix_datasets: dict = None, weights: dict = None) -> RoxxelStream:
+    def stream(self, seq_len: int, batch_size: int, seed: int, start_step: int = 0, completed_phases: list = None, total_steps: int = None, dtype = np.int32, mesh = None, data_sharding = None, mix_datasets: dict = None, weights: dict = None, prefetch_size: int = 4) -> RoxxelStream:
         """
         Streams from an open Roxxel instance with absolute bit-level determinism.
         Supports multi-phase curriculum training with N phases having different 
@@ -595,7 +628,8 @@ class Roxxel:
                     mesh=mesh,
                     data_sharding=data_sharding,
                     mix_datasets=None,
-                    weights=None
+                    weights=None,
+                    prefetch_size=0  # Disable prefetching on internal streams to save CPU threads!
                 )
 
             # 5. Determine the remaining steps and the active choices sequence
@@ -639,7 +673,7 @@ class Roxxel:
                     except StopIteration:
                         return
 
-            return RoxxelStream(mix_generator(), total_steps)
+            return RoxxelStream(mix_generator(), total_steps, prefetch_size)
 
         total_blocks = len(self)
         if total_blocks == 0:
@@ -739,4 +773,4 @@ class Roxxel:
                 # Yield high-performance JAX device array
                 yield jax.device_put(numpy_batch, data_sharding)
 
-        return RoxxelStream(batch_generator(), total_steps)
+        return RoxxelStream(batch_generator(), total_steps, prefetch_size)
