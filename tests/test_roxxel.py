@@ -390,12 +390,14 @@ def test_filepath_auto_resolution():
     rox_prefix.open()
     assert len(rox_prefix.filepaths) == len(shards)
     assert rox_prefix.filepaths == shards
+    rox_prefix.close()
     
     # 3. Test prefix resolution with extension: "./test_resolution.rox"
     rox_ext = Roxxel(filepath=f"{base_name}.rox")
     rox_ext.open()
     assert len(rox_ext.filepaths) == len(shards)
     assert rox_ext.filepaths == shards
+    rox_ext.close()
 
     # 4. Test directory resolution
     import tempfile
@@ -410,6 +412,7 @@ def test_filepath_auto_resolution():
         rox_dir.open()
         assert len(rox_dir.filepaths) == len(shards)
         assert all(os.path.basename(f) in [os.path.basename(s) for s in shards] for f in rox_dir.filepaths)
+        rox_dir.close()
     finally:
         shutil.rmtree(temp_dir)
         
@@ -521,7 +524,7 @@ def test_curriculum_trainer():
             trainer.run()
             
             # Verify steps executed
-            assert int(trainer.state.step.value) == 5
+            assert int(trainer.state.step[...]) == 5
             
             # Verify logger created files
             assert os.path.exists(os.path.join(temp_dir, "roxxel_system.log"))

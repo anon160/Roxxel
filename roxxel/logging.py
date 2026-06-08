@@ -163,6 +163,9 @@ class Logger:
             # 2. Stop system logs listener
             if hasattr(self, 'listener'):
                 self.listener.stop()  # Drains log queue completely to disk before closing
+                for handler in self.listener.handlers:
+                    if hasattr(handler, 'close'):
+                        handler.close()
 
             # 3. Cleanly remove handler from singleton logger
             if hasattr(self, 'logger') and hasattr(self, 'queue_handler'):

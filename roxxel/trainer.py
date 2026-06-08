@@ -170,7 +170,7 @@ class Trainer:
                 state.optimizer.update(grads)
             try:
                 state.step[...] += 1
-            except (TypeError, ValueError, AttributeError):
+            except (TypeError, ValueError, AttributeError, KeyError):
                 state.step.value += 1
             return {"loss": loss, "ppl": jnp.exp(loss)}
             
@@ -197,7 +197,7 @@ class Trainer:
         if hasattr(self.state, "step"):
             try:
                 self.state.step[...] = jnp.array(start_step, dtype=jnp.int32)
-            except (TypeError, ValueError, AttributeError):
+            except (TypeError, ValueError, AttributeError, KeyError):
                 if hasattr(self.state.step, "value"):
                     self.state.step.value = jnp.array(start_step, dtype=jnp.int32)
             
@@ -275,12 +275,15 @@ class Trainer:
                     
                     if hasattr(self.state, "step"):
                         try:
-                            curr_step = int(self.state.step.value)
-                        except (TypeError, ValueError, AttributeError):
+                            curr_step = int(self.state.step[...])
+                        except (TypeError, ValueError, AttributeError, KeyError):
                             try:
-                                curr_step = int(self.state.step)
+                                curr_step = int(self.state.step.value)
                             except (TypeError, ValueError, AttributeError):
-                                curr_step += 1
+                                try:
+                                    curr_step = int(self.state.step)
+                                except (TypeError, ValueError, AttributeError):
+                                    curr_step += 1
                     else:
                         curr_step += 1
                         
