@@ -1,70 +1,113 @@
 # Roxxel 🚀 
 
-**Zero-RAM, JAX-Centric Dataloading, Streaming, and Asynchronous Checkpointing & Logging Toolkit**
+**Zero-RAM JAX Dataloader, Asynchronous Checkpointer & Logging Trainer for Flax NNX**
 
-Roxxel is an ultra-lightweight, zero-bloat, high-performance toolkit designed specifically for large-scale JAX & Flax NNX deep learning training pipelines (such as State Space Models, Transformers, and SSMs like Xenron). 
+Roxxel is a zero-RAM, ultra-lightweight, and exceptionally fast dataset manager and pre-training orchestrator designed specifically for distributed JAX/Flax NNX clusters. 
 
-By combining POSIX memory-mapped dataset sharding, high-performance async logging, and Flax NNX topology-agnostic asynchronous checkpointing, Roxxel provides a unified, framework-native pipeline that does away with heavy, over-engineered training frameworks.
+By utilizing virtualized POSIX memory-mapped dataset sharding, background asynchronous Orbax checkpointing, and thread-safe distributed logging, Roxxel completely does away with heavy, complex, and over-engineered training frameworks.
 
 ---
 
-## 🌟 The Four Pillars of Roxxel
+## 🌟 Key Features
 
-### 1. Zero-RAM Sharded Block Dataloader (`roxxel.Roxxel`)
-* **OS-Level Memory Mapping:** Maps multi-terabyte datasets directly into virtual memory via the operating system's kernel page cache using `numpy.memmap`. Consumes **exactly 0 bytes of Python RAM** for storage.
-* **Dynamic Dtype Auto-Detection:** Automatically detects the data representation (e.g. `int32` token IDs, `float32` arrays, or `uint8` bytes) on compilation and stores it in a backward-compatible 32-byte footer (`ROXXEL02` format).
-* **Precise O(1) Fast-Forwarding:** Instantly resumes streaming from any checkpointed step in under 1 millisecond using exact byte offsets—completely skipping the need to execute dummy fast-forward loops.
+- **OS-Level Memory Mapping (`mmap`)**: Maps multi-terabyte datasets directly into virtual memory via the operating system's kernel page cache. Consumes exactly **0 bytes of Python RAM** for dataset storage.
+- **Unified Causal Streaming**: Automatically chunks, shuffles, and loads batches directly onto JAX device layouts (`jax.device_put`) using your Named Sharding mesh. Exposes the exact step count (`len(stream)`).
+- **Instant Offset Seeking**: Resumes streaming from any step index in under 1 millisecond using binary offsets—completely skipping the need to execute slow dummy fast-forward loops.
+- **Dynamic Dtype Auto-Detection**: Detects datatypes (e.g. `int32` token IDs, `float32` arrays, or raw text bytes) on compilation, writes them in a backward-compatible format, and decodes them perfectly on read.
+- **Multi-Dataset Blending / Mixing**: Blends a primary dataset with multiple secondary datasets using weight ratios. Automatically handles dataset exhaustion mid-phase by re-normalizing weights on the fly.
+- **Curriculum Schedule Timelines**: Supports dynamic sequence length extension (e.g., shifting from 1K to 32K context windows) and batch size changes at precise training step boundaries.
+- **Topology-Agnostic Checkpointing**: Offloads PyTree serialization asynchronously to background threads via Orbax Checkpoint Manager. Restores parameters natively using abstract templates, meaning model definition changes do not break older saved weights.
+- **Multi-Host TPU/GPU Pod Safety**: Restrictions ensure only Rank 0 writes stdout prints, system logs, and metrics CSV files, avoiding multi-process locking contention and terminal clutter.
 
-### 2. JAX-Native Streaming (`dataset.stream()`)
-* **Zero Double-Copy Overhead:** Automatically chunks, shuffles, and places batches directly onto JAX device layouts (`jax.device_put`) using your Named Sharding Mesh. Avoids JAX default-device materialization bottlenecks and GPU/TPU OOM spikes.
-* **Dynamic Step Calculation:** The stream returns a custom `RoxxelStream` object which natively exposes `len(stream)`—enabling you to instantly align learning rate schedules and progress bars.
+---
 
-### 3. Asynchronous Model Checkpointing (`roxxel.checkpoint.Checkpointer`)
-* **Zero-Latency Async Storage:** Offloads state serialization to background threads using Orbax Checkpoint Manager, allowing your GPU/TPU accelerators to keep training without waiting for disk writes.
-* **NNX Topology Agnostic:** Restores state PyTrees natively using abstract template evaluation, decoupling model architecture updates from saved weights.
-* **Best-Loss Tracking:** Automatically monitors metric payloads and preserves the checkpoint achieving the lowest training loss (`best_mode='min'`).
+## 🤖 What Roxxel Handles Automatically (So You Don't Have To)
 
-### 4. Asynchronous JAX-Aware Logging (`roxxel.Logger`)
-* **Zero-Overhead Async Execution:** Spawns a background thread queue (`QueueListener`) to process writes to standard output and disk files asynchronously. Zero interference with critical GPU/TPU execution.
-* **Multi-Host TPU/GPU Pod Safety:** Automatically detects JAX rank and restricts logging to Rank 0, completely avoiding log corruption and process conflicts across multi-node pre-training clusters.
-* **Atomic Exception Traceback Capture:** Implements robust context-manager (`with` statement) logic. If a TPU OOMs, crashes, or is forcefully interrupted, the queue instantly flushes to the log file and records the exact stack trace before bubbling the error up.
+Roxxel was engineered to remove the friction of writing accelerator-optimized JAX code. It handles the following tasks automatically under the hood:
+
+1. **JIT Train Step Compilation**: On initialization, `Trainer` automatically compiles your JIT training step (`@nnx.jit`). You don't need to write or trace JAX functions manually.
+2. **Loss Unpacking & Wrapping**: If your loss function returns a tuple/list (like `(loss, aux_data)`) or a dictionary (like `{"loss": loss, "perplexity": ppl}`), Roxxel automatically extracts the scalar loss for gradients (`nnx.value_and_grad`), avoiding compiler crashes.
+3. **Auto-Initialized ModelState**: You don't have to write state wrapper boilerplate (e.g. `TrainState` classes). The trainer dynamically bundles your model, optimizer, and training step counter.
+4. **Auto-Initialized Checkpointer & Logger**: If you pass a folder path to the `save_path` parameter, Roxxel automatically initializes the asynchronous Orbax Checkpointer and multi-threaded Logger under that directory, saving checkpoints in `save_path/checkpoints` and logs directly in `save_path`.
+5. **Dynamic Stream Re-instantiation**: During curriculum phase transitions (e.g. when sequence length changes), Roxxel automatically closes the active stream, computes completed offsets, and swaps the dataset streams instantly.
+6. **Exhaustion Re-normalization**: If one of your mixed datasets runs out of records mid-training, Roxxel removes it from the choice pool and re-normalizes the weights of the remaining active datasets to prevent training stalls.
+7. **Crash-Safe Log Flushing**: In the event of an OOM, crash, or exception, the logger intercepts the exception, logs the stack trace to the system log, and flushes all pending file and stdout writes before bubbling the error.
 
 ---
 
 ## 📦 Installation
 
-Roxxel can be installed via `pip` directly from PyPI.
-
-To install the core dataloader and async logging engine only:
+To install the core dataloader and async logging engine only (no JAX required):
 ```bash
 pip install roxxel
 ```
 
-To install the JAX-native asynchronous checkpointing extensions:
+To install the JAX-native asynchronous trainer and checkpointing extensions:
 ```bash
 pip install roxxel[checkpoint]
 ```
 
 ---
 
-## 🚀 End-to-End JAX/Flax NNX Training Cookbook
+## 🚀 Quick Start Cookbook
 
-For a complete, real-world cookbook showing how Roxxel integrates data compilation, sharded streaming, asynchronous system logging, JAX Named Sharding, and Orbax NNX checkpointing into a single training pipeline, please refer to the [Roxxel Tutorial Documentation](https://anon160.github.io/Roxxel/tutorial/).
+Here is a complete, zero-boilerplate example showing how to initialize a model, define a curriculum schedule, and execute pre-training using the consolidated `Trainer`:
+
+```python
+import jax
+import optax
+from flax import nnx
+from roxxel import Roxxel, Phase, Curriculum, Trainer
+
+# 1. Initialize Flax NNX model and optimizer
+model = nnx.Linear(10, 5, rngs=nnx.Rngs(42))
+tx = optax.sgd(0.01)
+optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
+
+# 2. Define the curriculum (e.g., Phase 1: 1000 steps, Phase 2: 500 steps)
+phases = [
+    Phase(steps=1000, batch_size=16, seq_len=128),
+    Phase(steps=500, batch_size=4, seq_len=512)
+]
+curriculum = Curriculum(
+    primary_streamer=Roxxel("./wiki_tokens_*.rox"), 
+    phases=phases
+)
+
+# 3. Define the loss function
+def loss_fn(model, batch):
+    logits = model(batch[:, :-1].astype(jax.numpy.float32))
+    targets = batch[:, 1:].astype(jax.numpy.float32)
+    return jax.numpy.mean((logits - targets) ** 2)
+
+# 4. Initialize the Trainer
+# Setting save_path automatically initializes Checkpointer, Logger, and ModelState
+trainer = Trainer(
+    model=model,
+    optimizer=optimizer,
+    curriculum=curriculum,
+    loss_fn=loss_fn,
+    save_path="./run_delta",
+    checkpoint_every=100,
+    log_every=10
+)
+
+# 5. Run curriculum training
+trainer.run()
+```
 
 ---
 
-## 🔄 API Evolution: The Old Way vs. The New Fused Way
+## 📖 Learn More
 
-Roxxel has been completely re-engineered to provide unified, non-blocking logs alongside zero-copy sharding, memory mapping, and background Orbax checkpointing for distributed deep learning.
-
-| Feature | The Old Way (v0.1.0) | The New Fused Way (v0.5.x) |
-| :--- | :--- | :--- |
-| **Block Compilation** | Required wrapping writers in a separate external compiler class (`RoxxelBlockCompiler`) to manually group and pad inputs. | **100% Fused & Native**: The `rox.write()` API consumes arbitrary string/byte/numpy generators, automatically chunks them, handles padding, and writes to disk in one call. |
-| **Data Types on Disk** | Restricted entirely to byte-level representations (`uint8`). Multi-byte dtypes (like tokenized `int32` IDs) were corrupted/split. | **Dynamic Dtype Metadata**: Automatically detects the datatype (e.g. `int32`, `float32`) on write, stores it in a 32B footer (`ROXXEL02`), and decodes perfectly on read. |
-| **Shard Management** | Users had to write manual file rotation loops, file naming schemes, and offset tables to handle large datasets. | **Zero-Config Sharding**: Specify a glob path (e.g., `wiki_*.rox`) and `max_shard_bytes`. Roxxel handles shard rotation and virtualizes them into one contiguous list view. |
-| **DL / JAX Streaming** | Required writing custom shuffling code, buffer management, and tedious boilerplate `jax.device_put` pipelines. | **Unified Causal Streaming**: The `dataset.stream()` API handles globally shuffled batching, O(1) step resumption, and automatic JAX sharded device placement with zero double-copy overhead. |
-| **Model Checkpointing** | Standard training loops required manual `pickle`, custom JSON savers, or synchronous JAX disk blocks. | **Asynchronous Orbax (`Checkpointer`)**: Flax NNX model weights/optimizers are serialized concurrently in background threads with auto-computed best-loss tracking. |
-| **Distributed System Logging** | Standard print statements caused GPU pipeline bottlenecks and multi-host log overlapping. | **Asynchronous Logger (`Logger`)**: Queue-based async writing offloaded to background threads with multi-host rank-zero filters and atomic exception traceback capturing. |
+For complete documentation, design guides, and API specs, visit the [Roxxel Documentation Site](https://anon160.github.io/Roxxel/):
+- **[Why Roxxel?](https://anon160.github.io/Roxxel/why_roxxel/)**: Design philosophy and comparisons to PyTorch/TensorFlow dataloaders.
+- **[End-to-End Tutorial](https://anon160.github.io/Roxxel/tutorial/)**: Full cookbook with hardware sharding and dataset blending.
+- **[Dataloader & Streaming](https://anon160.github.io/Roxxel/dataloader_and_streaming/)**: Deep dive into block virtualization and streams.
+- **[Curriculum Blending](https://anon160.github.io/Roxxel/curriculum/)**: How to mix datasets and define phases.
+- **[Trainer Orchestration](https://anon160.github.io/Roxxel/trainer/)**: Full Trainer and ModelState specifications.
+- **[Asynchronous Checkpointing](https://anon160.github.io/Roxxel/checkpointing/)**: Orbax asynchronous serialization details.
+- **[Asynchronous Logging](https://anon160.github.io/Roxxel/logging/)**: Rank-zero queue writing details.
 
 ---
 

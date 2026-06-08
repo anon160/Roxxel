@@ -28,6 +28,7 @@ theme:
 
 nav:
   - Welcome: index.md
+  - Why Roxxel: why_roxxel.md
   - Tutorial: tutorial.md
   - Dataloader & Streaming: dataloader_and_streaming.md
   - Curriculum Blending: curriculum.md
