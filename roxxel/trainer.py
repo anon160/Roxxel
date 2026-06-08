@@ -15,8 +15,13 @@ class Phase:
         weights (dict, optional): Dataset blending weights mapping dataset keys to float ratios.
             Must match the keys provided in Curriculum.mix_streamers (along with 'self').
     """
-    def __init__(self, steps: int, batch_size: int, seq_len: int, weights: dict = None):
+    def __init__(self, steps: int = None, batch_size: int = None, seq_len: int = None, epochs: float = None, weights: dict = None):
+        if steps is None and epochs is None:
+            raise ValueError("Phase must specify either 'steps' or 'epochs'.")
+        if batch_size is None or seq_len is None:
+            raise ValueError("Phase must specify both 'batch_size' and 'seq_len'.")
         self.steps = steps
+        self.epochs = epochs
         self.batch_size = batch_size
         self.seq_len = seq_len
         self.weights = weights
@@ -32,8 +37,15 @@ class Curriculum:
     """
     def __init__(self, primary_streamer: Roxxel, phases: list[Phase], mix_streamers: dict[str, Roxxel] = None):
         self.primary_streamer = primary_streamer
-        self.phases = phases
         self.mix_streamers = mix_streamers
+        
+        self.phases = []
+        for p in phases:
+            if p.steps is None:
+                # Automatically calculate discrete steps from the requested epochs
+                total_steps_in_epoch = self.primary_streamer.estimate_steps(seq_len=p.seq_len, batch_size=p.batch_size)
+                p.steps = int(total_steps_in_epoch * p.epochs)
+            self.phases.append(p)
 
 class ModelState(nnx.Module):
     """

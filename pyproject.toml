@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "roxxel"
-version = "0.7.4"
+version = "0.7.5"
 description = "A zero-RAM, multi-modal, sharded binary dataset manager"
 readme = "README.md"
 requires-python = ">=3.8"
