@@ -457,6 +457,52 @@ def test_mixer_exhaustion_renormalization():
     clean_shards(base_name2)
     print("RoxxelMixer Exhaustion and Re-normalization test passed successfully!\n")
 
+def test_curriculum_trainer():
+    print("--- Testing Curriculum Trainer ---")
+    from roxxel.trainer import Phase, Curriculum, Trainer
+    base_name = "./test_trainer_ds"
+    clean_shards(base_name)
+    
+    tokens = [np.arange(i * 64, (i + 1) * 64, dtype=np.int32) for i in range(10)]
+    rox = Roxxel(filepath=f"{base_name}_*.rox")
+    rox.write(tokens, separator=None, block_size=256, max_shard_bytes=10000)
+    
+    class DummyState:
+        def __init__(self):
+            class Step:
+                value = 0
+            self.step = Step()
+            
+    state = DummyState()
+    
+    def mock_train_step(st, batch):
+        st.step.value += 1
+        return {"loss": 0.5, "ppl": 1.6}
+        
+    with Roxxel(filepath=f"{base_name}_*.rox") as ds:
+        phases = [
+            Phase(steps=2, batch_size=2, seq_len=8),
+            Phase(steps=3, batch_size=1, seq_len=16)
+        ]
+        curriculum = Curriculum(primary_streamer=ds, phases=phases)
+        
+        trainer = Trainer(
+            state=state,
+            optimizer=None,
+            curriculum=curriculum,
+            train_step_fn=mock_train_step,
+            log_every=1,
+            checkpoint_every=2,
+            eval_every=2,
+            eval_fn=lambda st: "mock_eval",
+            seed=42
+        )
+        trainer.run()
+        assert state.step.value == 5
+        
+    clean_shards(base_name)
+    print("Curriculum Trainer test passed successfully!\n")
+
 if __name__ == "__main__":
     test_fused_sharded_mode()
     test_int32_tokenized_dataset()
@@ -466,3 +512,5 @@ if __name__ == "__main__":
     test_mixer_multiphase_stream()
     test_filepath_auto_resolution()
     test_mixer_exhaustion_renormalization()
+    test_curriculum_trainer()
+

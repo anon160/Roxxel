@@ -1,123 +1,176 @@
-# End-to-End Tutorial
+# End-to-End Tutorial: Multi-Phase Curriculum Learning
 
-Here is a complete, real-world example showing how Roxxel integrates data compilation, sharded streaming, asynchronous system logging, JAX Named Sharding, and Orbax NNX checkpointing into a single, highly optimized training pipeline:
+This tutorial shows how to construct an end-to-end distributed pre-training pipeline using **Roxxel**. We will showcase how to build a dynamic curriculum learning schedule (progressively shifting from short-context length to long-context length) and execute it using Roxxel's built-in `Trainer` and `Curriculum` system.
+
+---
+
+## 🌟 Architecture Overview
+
+Roxxel's training runner infrastructure uses a modular, decoupled hierarchy to manage data streaming and execution:
+
+1. **Streamer (`Roxxel`)**: The core class representing virtualized, memory-mapped shards of dataset blocks.
+2. **`Curriculum`**: Manages the training roadmap (phases, sequence lengths, batch sizes, dataset weights, and dataset blending). It wraps the primary and optional secondary dataset streamers.
+3. **`Trainer`**: The orchestrator class. It accepts the `Curriculum` schedule, JAX model/optimizer, JIT-compiled train step, async `Logger`, and `Checkpointer`. It runs the training loop, automatically hot-swapping streams and reshaping JAX arrays at step boundaries, saving checkpoints, and executing evaluations.
+
+```mermaid
+graph TD
+    A[Roxxel Streamers] --> B[Curriculum]
+    B --> C[Trainer]
+    D[Flax NNX State & Optimizer] --> C
+    E[Checkpointer & Logger] --> C
+    C --> F[Optimized Loop Execution]
+```
+
+---
+
+## Complete Curriculum Pre-Training Cookbook
+
+Here is a complete, real-world implementation combining data compilation, multi-phase curriculum streaming, asynchronous logging, JAX hardware device sharding, and Orbax asynchronous checkpointing:
 
 ```python
 import os
 import jax
 import jax.numpy as jnp
 import optax
+import numpy as np
 from flax import nnx
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 from jax.experimental import mesh_utils
 
-from roxxel import Roxxel, Logger
+from roxxel import Roxxel, Logger, Phase, Curriculum, Trainer
 from roxxel.checkpoint import Checkpointer
 
-# --- 1. DATASET COMPILATION ---
-# Let's compile tokenized integer sequences into 4KB uniform blocks
+# --- 1. DEFINE ARCHITECTURE AND STATE ---
+class Xenron(nnx.Module):
+    """Xenron model architecture."""
+    def __init__(self, num_layers: int, rngs: nnx.Rngs):
+        self.embed = nnx.Embed(10000, 256, rngs=rngs)
+        self.linear = nnx.Linear(256, 10000, rngs=rngs)
+        
+    def __call__(self, x):
+        return self.linear(self.embed(x))
+
+class XenronState(nnx.Module):
+    """Unified module wrapping model state, optimizer, and training step count."""
+    def __init__(self, model: Xenron, optimizer: nnx.Optimizer):
+        self.model = model
+        self.optimizer = optimizer
+        self.step = nnx.Variable(jnp.array(0, dtype=jnp.int32))
+
+# --- 2. COMPILE TOY DATASET ---
 def token_generator():
-    for i in range(1000):
-        # yields numpy arrays of tokenized int32 IDs
-        yield jnp.arange(128, dtype=jnp.int32)
+    """Generates continuous tokenized integer sequences."""
+    for i in range(10000):
+        yield np.random.randint(0, 10000, size=(128,), dtype=np.int32)
 
-rox = Roxxel("./wiki_*.rox")
-rox.write(token_generator(), block_size=4096, max_shard_bytes=1024**3, separator=None)
+DATASET_PATTERN = "./wiki_*.rox"
+rox = Roxxel(DATASET_PATTERN)
+# Compile raw token generator into uniform 4KB block archives
+rox.write(token_generator(), separator=b"\x00", block_size=4096, max_shard_bytes=1024**3)
 
-
-# --- 2. HIGH-PERFORMANCE TRAINING HARNESS ENVIRONMENT ---
+# --- 3. TRAINING HYPERPARAMETERS ---
 GLOBAL_SEED = 42
-BATCH_SIZE = 32
-SEQ_LEN = 1024
-EPOCHS = 3
 LR = 3e-4
+checkpoint_path = "./checkpoints"
 
-# Open the dataset once to get the exact steps per epoch to define the scheduler
-with Roxxel(filepath="./wiki_*.rox") as init_ds:
-    steps_per_epoch = init_ds.estimate_steps(seq_len=SEQ_LEN, batch_size=BATCH_SIZE)
+# --- 4. SAMPLING AND TRAINING FUNCTIONS ---
+def sample_now(state: XenronState) -> str:
+    """Mock sampling function for step evaluation."""
+    return f"[Decoded Text from step {int(state.step.value)}]: Once upon a time in a JAX device cluster..."
 
-total_train_steps = steps_per_epoch * EPOCHS
-
-# Initialize your async text logger inside an atomic Context Manager.
-# This guarantees that if a TPU crashes, OOMs, or is forcefully interrupted,
-# the thread queue will instantly drain completely to 'run_delta/roxxel_system.log'
-with Logger(log_dir="run_delta") as logger:
-    logger.log_message("🚀 Initializing Distributed Pre-training Cluster...")
-
-    # Initialize Flax NNX model tracking states using unified seed
-    rngs = nnx.Rngs(GLOBAL_SEED)
-    
-    class SimpleSSM(nnx.Module):
-        def __init__(self, rngs: nnx.Rngs):
-            self.embed = nnx.Embed(10000, 256, rngs=rngs)
-            self.linear = nnx.Linear(256, 10000, rngs=rngs)
-            
-        def __call__(self, x):
-            return self.linear(self.embed(x))
-            
-    model = SimpleSSM(rngs)
-    
-    # Setup Optax learning rate schedule
-    scheduler = optax.warmup_cosine_decay_schedule(
-        init_value=1e-7,
-        peak_value=LR,
-        warmup_steps=int(total_train_steps * 0.05),
-        decay_steps=total_train_steps
-    )
-    tx = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(scheduler))
-    optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
-
-    # --- 3. ORBAX CHECKPOINT RESTORATION ---
-    # Instantiate Checkpointer (saves parameters and optimizer natively)
-    checkpointer = Checkpointer(checkpoint_path="./checkpoints", model=model, optimizer=optimizer)
-    start_step = checkpointer.restore()
-    logger.log_message(f"🔄 Checkpointer restored. Starting from step: {start_step}")
-
-    # --- 4. SHARDED JAX STREAMING & TRAINING LOOP ---
-    # Create distributed hardware sharding paths for Multi-Host TPU/GPU Pod scaling
-    devices = jax.devices()
-    mesh = Mesh(mesh_utils.create_device_mesh((len(devices),)), axis_names=('data',))
-    data_sharding = NamedSharding(mesh, P('data', None))
-
-    @nnx.jit
-    def train_step(model, optimizer, batch):
-        def loss_fn(model):
-            logits = model(batch[:, :-1])
-            targets = batch[:, 1:]
-            loss = optax.softmax_cross_entropy_with_integer_labels(logits, targets).mean()
-            return loss
-        
-        loss, grads = nnx.value_and_grad(loss_fn)(model)
-        optimizer.update(grads)
+# Define JIT-compiled train step
+@nnx.jit
+def train_step(state: XenronState, batch: jax.Array) -> dict:
+    def loss_fn(model):
+        # Predict next tokens (causal shift)
+        logits = model(batch[:, :-1])
+        targets = batch[:, 1:]
+        loss = optax.softmax_cross_entropy_with_integer_labels(logits, targets).mean()
         return loss
+    
+    loss, grads = nnx.value_and_grad(loss_fn)(state.model)
+    state.optimizer.update(grads)
+    state.step.value += 1
+    
+    return {"loss": loss, "ppl": jnp.exp(loss)}
 
-    for epoch in range(EPOCHS):
-        logger.log_message(f"⏳ Starting Training Epoch {epoch + 1}/{EPOCHS}...")
+# --- 5. MAIN TRAINING EXECUTION ---
+def main():
+    with Logger(log_dir="run_delta") as logger:
+        logger.log_message("🚀 Initializing Distributed Pre-training Cluster...")
+
+        # Initialize model
+        rngs = nnx.Rngs(GLOBAL_SEED)
+        model = Xenron(4, rngs)
+
+        # Distributed hardware sharding paths
+        devices = jax.devices()
+        mesh = Mesh(mesh_utils.create_device_mesh((len(devices),)), axis_names=('data',))
+        data_sharding = NamedSharding(mesh, P('data', None))
+
+        # 1. Setup our Roxxel dataset streamers
+        with Roxxel(filepath=DATASET_PATTERN) as init_ds:
+            phase1_steps = init_ds.estimate_steps(seq_len=1025, batch_size=16)
+            phase2_full_steps = init_ds.estimate_steps(seq_len=32769, batch_size=1)
+            phase2_steps = int(phase2_full_steps * 0.20) # 20% of long-context epoch
+
+        # 2. Define the curriculum schedule
+        # Format: Phase(steps, batch_size, seq_len, optional_weights)
+        phases = [
+            Phase(steps=phase1_steps, batch_size=16, seq_len=1025), # Phase 1: Base Pre-training
+            Phase(steps=phase2_steps, batch_size=1, seq_len=32769),  # Phase 2: Context Extension
+        ]
         
-        with Roxxel(filepath="./wiki_*.rox") as dataset:
-            # Load hardware-sharded JAX device arrays instantly
-            # (Epoch 0 resume fast-forwards instantly to start_step in O(1) time!)
-            loader_stream = dataset.stream(
-                seq_len=SEQ_LEN,
-                batch_size=BATCH_SIZE,
-                seed=GLOBAL_SEED,
-                start_step=start_step if epoch == 0 else 0,
-                mesh=mesh,
-                data_sharding=data_sharding
+        # Instantiate primary dataset curriculum
+        curriculum = Curriculum(
+            primary_streamer=Roxxel(DATASET_PATTERN),
+            phases=phases
+        )
+
+        # 3. Calculate total optimizer tracking steps
+        total_train_steps = sum(p.steps for p in phases)
+
+        # Continuous decay schedule spanning the full curriculum duration
+        tx = optax.chain(
+            optax.clip_by_global_norm(1.0),
+            optax.nadamw(
+                learning_rate=optax.warmup_cosine_decay_schedule(
+                    init_value=1e-7,
+                    peak_value=LR,
+                    warmup_steps=int(total_train_steps * 0.05),
+                    decay_steps=total_train_steps,
+                    end_value=LR * 0.01
+                ),
+                weight_decay=0.01
             )
-            
-            # RoxxelStream supports len() natively for progress bars and scheduler checks!
-            logger.log_message(f"Loaded {len(loader_stream)} steps remaining in this epoch.")
-            
-            for step_idx, batch in enumerate(loader_stream):
-                loss = train_step(model, optimizer, batch)
-                curr_step = start_step + step_idx if epoch == 0 else step_idx
-                
-                # Save asynchronously on a schedule (Orbax tracks the best model automatically!)
-                if curr_step % 100 == 0:
-                    logger.log_message(f"Step {curr_step} | Loss: {loss:.4f}")
-                    logger.log_metrics_summary(step=curr_step, metrics={"loss": float(loss), "perplexity": float(jnp.exp(loss))})
-                    checkpointer.save(curr_step, metrics_dict={"loss": loss})
-                    
-        start_step = 0  # Reset offset after completing epoch 0
+        )
+
+        optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
+        state = XenronState(model, optimizer)
+
+        # 4. Instantiate async Orbax checkpointer
+        handler = Checkpointer(checkpoint_path, state, optimizer)
+
+        # 5. Define Trainer orchestrator
+        trainer = Trainer(
+            state=state,
+            optimizer=optimizer,
+            curriculum=curriculum,
+            train_step_fn=train_step,
+            checkpointer=handler,
+            logger=logger,
+            eval_fn=sample_now,
+            eval_every=500,
+            checkpoint_every=100,
+            log_every=100,
+            seed=GLOBAL_SEED,
+            mesh=mesh,
+            data_sharding=data_sharding
+        )
+
+        # 6. Execute training
+        trainer.run()
+
+if __name__ == "__main__":
+    main()
 ```
