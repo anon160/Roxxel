@@ -459,10 +459,16 @@ def test_mixer_exhaustion_renormalization():
 
 def test_curriculum_trainer():
     print("--- Testing Curriculum Trainer ---")
-    from roxxel.trainer import Phase, Curriculum, Trainer, ModelState
-    from flax import nnx
-    import optax
-    import jax.numpy as jnp
+    try:
+        from roxxel.trainer import Phase, Curriculum, Trainer, ModelState
+        from flax import nnx
+        import optax
+        import jax.numpy as jnp
+    except ImportError:
+        import pytest
+        pytest.skip("Flax and checkpoint dependencies are not installed.")
+        return
+
     import tempfile
     import shutil
 
