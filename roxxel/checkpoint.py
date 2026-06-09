@@ -68,7 +68,7 @@ class Checkpointer:
             return 0
 
         def get_abstract_state_template():
-            abstract_model = nnx.eval_shape(lambda: nnx.merge(self.graphdef, nnx.state(self.model)))
+            abstract_model = nnx.eval_shape(lambda: nnx.merge(self.graphdef, nnx.state((self.model, self.optimizer))))
             _, abstract_state = nnx.split(abstract_model)
             return abstract_state
 

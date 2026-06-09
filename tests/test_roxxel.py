@@ -526,11 +526,15 @@ def test_curriculum_trainer():
             # Verify steps executed
             assert int(trainer.state.step[...]) == 5
             
-            # Verify logger created files
-            assert os.path.exists(os.path.join(temp_dir, "roxxel_system.log"))
             # Verify checkpointer created checkpoint directory
             assert os.path.exists(os.path.join(temp_dir, "checkpoints"))
+
+            # Verify restoration from checkpoints directory
+            restored_step = trainer.checkpointer.restore()
+            assert restored_step == 4
             
+            # Verify logger created files
+            assert os.path.exists(os.path.join(temp_dir, "roxxel_system.log"))
     finally:
         shutil.rmtree(temp_dir)
         clean_shards(base_name)
