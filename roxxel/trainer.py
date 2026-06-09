@@ -83,6 +83,7 @@ class Trainer:
         data_sharding=None,
         max_to_keep: int = 3,
         timeout: int = 1000,
+        async_queue_depth: int = 2,
     ):
         """
         Args:
@@ -109,6 +110,8 @@ class Trainer:
             data_sharding (jax.sharding.NamedSharding, optional): JAX named sharding specification.
             max_to_keep (int, optional): Max checkpoints to keep when initializing checkpointer path. Defaults to 3.
             timeout (int, optional): Timeout for async operations when initializing checkpointer path. Defaults to 1000.
+            async_queue_depth (int, optional): Maximum number of asynchronous steps to queue on device
+                before blocking host to prevent memory buildup. Defaults to 2.
         """
         # Check if the first parameter is actually a state object
         if hasattr(model, "model") and hasattr(model, "optimizer"):
@@ -129,6 +132,7 @@ class Trainer:
         self.seed = seed
         self.mesh = mesh
         self.data_sharding = data_sharding
+        self.async_queue_depth = async_queue_depth
 
         # Merge checkpointer and logger if save_path is provided
         if save_path is not None:
@@ -280,10 +284,34 @@ class Trainer:
                 current_weights
             )
             
+            from collections import deque
+            metrics_buffer = deque()
+
+            def drain_buffer():
+                while metrics_buffer:
+                    oldest_m = metrics_buffer.popleft()
+                    if isinstance(oldest_m, dict) and "loss" in oldest_m:
+                        try:
+                            oldest_m["loss"].block_until_ready()
+                        except Exception:
+                            pass
+
             curr_step = start_step
             while curr_step < total_train_steps:
                 for batch in loader_stream:
                     metrics = self.train_step_fn(self.state, batch)
+                    
+                    # Prevent JAX asynchronous dispatch queue buildup and activation memory leaks
+                    # by bounding the maximum queue depth while keeping execution pipelined/async.
+                    if self.async_queue_depth is not None and self.async_queue_depth > 0:
+                        metrics_buffer.append(metrics)
+                        if len(metrics_buffer) >= self.async_queue_depth:
+                            oldest = metrics_buffer.popleft()
+                            if isinstance(oldest, dict) and "loss" in oldest:
+                                try:
+                                    oldest["loss"].block_until_ready()
+                                except Exception:
+                                    pass
                     
                     if hasattr(self.state, "step"):
                         try:
@@ -312,6 +340,7 @@ class Trainer:
                         
                     # 3. Model sampling/evaluation
                     if self.eval_fn and curr_step % self.eval_every == 0:
+                        drain_buffer()
                         if self.logger:
                             self.logger.log_message(f"🧪 Running Evaluation Check at Step {curr_step}...")
                         story = self.eval_fn(self.state)
@@ -324,6 +353,7 @@ class Trainer:
                         phase_boundary_accumulator += phase.steps
                         
                         if curr_step == phase_boundary_accumulator:
+                            drain_buffer()
                             next_phase = self.curriculum.phases[phase_idx + 1]
                             next_steps = next_phase.steps
                             next_batch = next_phase.batch_size
@@ -351,10 +381,12 @@ class Trainer:
                             break
                             
                     if curr_step >= total_train_steps:
+                        drain_buffer()
                         if self.logger:
                             self.logger.log_message(f"🏁 Curriculum complete: {curr_step}/{total_train_steps} steps finished successfully.")
                         break
         finally:
+            drain_buffer()
             dataset.close()
             if self._own_checkpointer and self.checkpointer:
                 # Wait for any pending async checkpoint saves to finish
