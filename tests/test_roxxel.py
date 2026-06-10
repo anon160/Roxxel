@@ -540,6 +540,176 @@ def test_curriculum_trainer():
         shutil.rmtree(temp_dir)
         clean_shards(base_name)
 
+def test_sharded_streaming_mesh():
+    print("--- Testing Distributed Sharded Streaming with JAX Mesh ---")
+    try:
+        from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+        from jax.experimental import mesh_utils
+        import jax
+    except ImportError:
+        import pytest
+        pytest.skip("JAX sharding tools are not available.")
+        return
+
+    base_name = "./test_sharded_ds"
+    clean_shards(base_name)
+    
+    tokens = [np.arange(i * 64, (i + 1) * 64, dtype=np.int32) for i in range(5)]
+    rox = Roxxel(filepath=f"{base_name}_*.rox")
+    rox.write(tokens, separator=None, block_size=256, max_shard_bytes=10000)
+    
+    try:
+        devices = jax.devices()
+        mesh = Mesh(mesh_utils.create_device_mesh((len(devices),)), axis_names=('data',))
+        data_sharding = NamedSharding(mesh, P('data', None))
+        
+        with Roxxel(filepath=f"{base_name}_*.rox") as ds:
+            stream = ds.stream(
+                seq_len=8,
+                batch_size=4,
+                seed=42,
+                mesh=mesh,
+                data_sharding=data_sharding
+            )
+            for batch in stream:
+                # Check sharding configuration is applied to JAX array
+                assert isinstance(batch, jax.Array)
+                assert batch.sharding == data_sharding
+                break
+    finally:
+        clean_shards(base_name)
+
+def test_strict_resumption_determinism():
+    print("--- Testing Strict Resumption Determinism (Bit-for-Bit Matching) ---")
+    try:
+        from roxxel.trainer import Phase, Curriculum, Trainer, ModelState
+        from flax import nnx
+        import optax
+        import jax.numpy as jnp
+        import jax
+        import tempfile
+        import shutil
+    except ImportError:
+        import pytest
+        pytest.skip("Flax/optax dependencies are not installed.")
+        return
+
+    base_name = "./test_determ_ds"
+    clean_shards(base_name)
+    
+    # Write a dataset of simple numbers to stream
+    tokens = [np.arange(i * 128, (i + 1) * 128, dtype=np.int32) for i in range(10)]
+    rox = Roxxel(filepath=f"{base_name}_*.rox")
+    rox.write(tokens, separator=None, block_size=512, max_shard_bytes=20000)
+    
+    class SimpleModel(nnx.Module):
+        def __init__(self):
+            self.w = nnx.Param(jnp.array([1.5]))
+        def __call__(self, x):
+            return jnp.sum(x.astype(jnp.float32)) * self.w
+
+    def mock_loss_fn(model, batch):
+        return jnp.sum(model(batch)) * 0.01
+
+    temp_dir_1 = tempfile.mkdtemp()
+    temp_dir_2 = tempfile.mkdtemp()
+    
+    try:
+        # 1. Non-Stop Run (Steps 0 to 6)
+        model_ns = SimpleModel()
+        tx_ns = optax.sgd(0.01)
+        opt_ns = nnx.Optimizer(model_ns, tx_ns, wrt=nnx.Param)
+        
+        with Roxxel(filepath=f"{base_name}_*.rox") as ds:
+            phases = [Phase(steps=6, batch_size=2, seq_len=16)]
+            curr_ns = Curriculum(primary_streamer=ds, phases=phases)
+            
+            trainer_ns = Trainer(
+                model=model_ns,
+                optimizer=opt_ns,
+                curriculum=curr_ns,
+                loss_fn=mock_loss_fn,
+                save_path=temp_dir_1,
+                checkpoint_every=3,  # Checkpoint at step 3
+                log_every=1,
+                seed=42,
+                async_queue_depth=1
+            )
+            trainer_ns.run()
+            
+            ns_weights = nnx.state(trainer_ns.state.model)
+
+        # 2. Resumed Run (Start from step 0, run to step 3, restore checkpoint, run to step 6)
+        model_res = SimpleModel()
+        tx_res = optax.sgd(0.01)
+        opt_res = nnx.Optimizer(model_res, tx_res, wrt=nnx.Param)
+        
+        # Save a checkpoint at step 3 first by running a trainer to step 3
+        with Roxxel(filepath=f"{base_name}_*.rox") as ds:
+            phases_part1 = [Phase(steps=3, batch_size=2, seq_len=16)]
+            curr_part1 = Curriculum(primary_streamer=ds, phases=phases_part1)
+            trainer_part1 = Trainer(
+                model=model_res,
+                optimizer=opt_res,
+                curriculum=curr_part1,
+                loss_fn=mock_loss_fn,
+                save_path=temp_dir_2,
+                checkpoint_every=3,
+                log_every=1,
+                seed=42,
+                async_queue_depth=1
+            )
+            trainer_part1.run()
+            
+            # Verify we have a checkpoint at step 3
+            assert os.path.exists(os.path.join(temp_dir_2, "checkpoints"))
+
+        # Re-instantiate a trainer with the checkpoint path to restore from step 3 and continue to step 6
+        model_resume = SimpleModel()
+        tx_resume = optax.sgd(0.01)
+        opt_resume = nnx.Optimizer(model_resume, tx_resume, wrt=nnx.Param)
+        
+        with Roxxel(filepath=f"{base_name}_*.rox") as ds:
+            # Full curriculum (6 steps)
+            phases_full = [Phase(steps=6, batch_size=2, seq_len=16)]
+            curr_full = Curriculum(primary_streamer=ds, phases=phases_full)
+            
+            trainer_resume = Trainer(
+                model=model_resume,
+                optimizer=opt_resume,
+                curriculum=curr_full,
+                loss_fn=mock_loss_fn,
+                save_path=temp_dir_2,  # Read checkpoint from here
+                checkpoint_every=3,
+                log_every=1,
+                seed=42,
+                async_queue_depth=1
+            )
+            
+            # This should restore step 3 and execute steps 4 to 6
+            trainer_resume.run()
+            
+            res_weights = nnx.state(trainer_resume.state.model)
+            
+        # 3. Assert Bit-Level Deterministic Matching!
+        # Match model weights using JAX tree flattening
+        flat_ns, _ = jax.tree_util.tree_flatten(ns_weights)
+        flat_res, _ = jax.tree_util.tree_flatten(res_weights)
+        assert len(flat_ns) == len(flat_res)
+        for val_ns, val_res in zip(flat_ns, flat_res):
+            # Extract underlying array values safely
+            v_ns = val_ns[...] if hasattr(val_ns, "value") else val_ns
+            v_res = val_res[...] if hasattr(val_res, "value") else val_res
+            np.testing.assert_array_equal(v_ns, v_res)
+            
+        # Match step counter
+        assert int(trainer_ns.state.step[...]) == int(trainer_resume.state.step[...])
+        
+    finally:
+        shutil.rmtree(temp_dir_1)
+        shutil.rmtree(temp_dir_2)
+        clean_shards(base_name)
+
 if __name__ == "__main__":
     test_fused_sharded_mode()
     test_int32_tokenized_dataset()
@@ -550,4 +720,6 @@ if __name__ == "__main__":
     test_filepath_auto_resolution()
     test_mixer_exhaustion_renormalization()
     test_curriculum_trainer()
+    test_sharded_streaming_mesh()
+    test_strict_resumption_determinism()
 
