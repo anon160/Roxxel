@@ -515,7 +515,8 @@ def test_curriculum_trainer():
                 checkpoint_every=2,
                 eval_every=2,
                 eval_fn=lambda st: "mock_eval",
-                seed=42
+                seed=42,
+                grad_accum_steps=2
             )
             
             # Verify internal ModelState is instantiated

@@ -84,6 +84,7 @@ class Trainer:
         max_to_keep: int = 3,
         timeout: int = 1000,
         async_queue_depth: int = 2,
+        grad_accum_steps: int = None,
     ):
         """
         Args:
@@ -112,6 +113,8 @@ class Trainer:
             timeout (int, optional): Timeout for async operations when initializing checkpointer path. Defaults to 1000.
             async_queue_depth (int, optional): Maximum number of asynchronous steps to queue on device
                 before blocking host to prevent memory buildup. Defaults to 2.
+            grad_accum_steps (int, optional): Number of micro-batches to accumulate gradients over.
+                If None, defaults to 1 (no accumulation).
         """
         # Check if the first parameter is actually a state object
         if hasattr(model, "model") and hasattr(model, "optimizer"):
@@ -133,6 +136,7 @@ class Trainer:
         self.mesh = mesh
         self.data_sharding = data_sharding
         self.async_queue_depth = async_queue_depth
+        self.grad_accum_steps = grad_accum_steps if grad_accum_steps is not None else 1
 
         # Merge checkpointer and logger if save_path is provided
         if save_path is not None:
@@ -166,29 +170,64 @@ class Trainer:
             self.logger = logger
 
         # Build and JIT compile the training step internally
-        @nnx.jit
-        def train_step(state, batch):
-            def loss_wrapper(model):
-                out = self.loss_fn(model, batch)
-                # Ensure only the scalar loss is returned for gradients
-                if isinstance(out, (tuple, list)):
-                    return out[0]
-                elif isinstance(out, dict):
-                    if "loss" in out:
-                        return out["loss"]
-                    return next(iter(out.values()))
-                return out
+        @nnx.jit(static_argnums=(2,))
+        def train_step(state, batch, grad_accum_steps):
+            if grad_accum_steps > 1:
+                micro_batches = jnp.split(batch, grad_accum_steps, axis=0)
+                accum_grads = None
+                accum_loss = 0.0
                 
-            loss, grads = nnx.value_and_grad(loss_wrapper)(state.model)
-            try:
-                state.optimizer.update(state.model, grads)
-            except TypeError:
-                state.optimizer.update(grads)
-            try:
-                state.step[...] += 1
-            except (TypeError, ValueError, AttributeError, KeyError):
-                state.step.value += 1
-            return {"loss": loss, "ppl": jnp.exp(loss)}
+                for micro_batch in micro_batches:
+                    def loss_wrapper(model):
+                        out = self.loss_fn(model, micro_batch)
+                        if isinstance(out, (tuple, list)):
+                            return out[0]
+                        elif isinstance(out, dict):
+                            if "loss" in out:
+                                return out["loss"]
+                            return next(iter(out.values()))
+                        return out
+                        
+                    loss, grads = nnx.value_and_grad(loss_wrapper)(state.model)
+                    
+                    # Accumulate scaled loss and gradients
+                    accum_loss += loss / grad_accum_steps
+                    if accum_grads is None:
+                        accum_grads = jax.tree.map(lambda g: g / grad_accum_steps, grads)
+                    else:
+                        accum_grads = jax.tree.map(lambda g, ag: ag + g / grad_accum_steps, grads, accum_grads)
+                
+                try:
+                    state.optimizer.update(state.model, accum_grads)
+                except TypeError:
+                    state.optimizer.update(accum_grads)
+                try:
+                    state.step[...] += 1
+                except (TypeError, ValueError, AttributeError, KeyError):
+                    state.step.value += 1
+                return {"loss": accum_loss, "ppl": jnp.exp(accum_loss)}
+            else:
+                def loss_wrapper(model):
+                    out = self.loss_fn(model, batch)
+                    # Ensure only the scalar loss is returned for gradients
+                    if isinstance(out, (tuple, list)):
+                        return out[0]
+                    elif isinstance(out, dict):
+                        if "loss" in out:
+                            return out["loss"]
+                        return next(iter(out.values()))
+                    return out
+                    
+                loss, grads = nnx.value_and_grad(loss_wrapper)(state.model)
+                try:
+                    state.optimizer.update(state.model, grads)
+                except TypeError:
+                    state.optimizer.update(grads)
+                try:
+                    state.step[...] += 1
+                except (TypeError, ValueError, AttributeError, KeyError):
+                    state.step.value += 1
+                return {"loss": loss, "ppl": jnp.exp(loss)}
             
         self.train_step_fn = train_step
 
@@ -225,6 +264,7 @@ class Trainer:
         current_batch_size = None
         current_phase_total_steps = None
         current_weights = None
+        current_grad_accum_steps = 1
         
         for idx, phase in enumerate(self.curriculum.phases):
             p_steps = phase.steps
@@ -242,6 +282,13 @@ class Trainer:
                 current_seq_len = p_seq
                 current_phase_total_steps = p_steps
                 current_weights = p_weights
+                
+                # Check for divisible batch size and gradient accumulation
+                current_grad_accum_steps = self.grad_accum_steps
+                if current_grad_accum_steps > 1:
+                    current_grad_accum_steps = min(current_grad_accum_steps, current_batch_size)
+                    if current_batch_size % current_grad_accum_steps != 0:
+                        raise ValueError(f"Batch size {current_batch_size} of Phase {idx + 1} must be divisible by grad_accum_steps {current_grad_accum_steps}.")
                 break
                 
         # Calculate remaining target steps for the active streaming window session
@@ -299,7 +346,7 @@ class Trainer:
             curr_step = start_step
             while curr_step < total_train_steps:
                 for batch in loader_stream:
-                    metrics = self.train_step_fn(self.state, batch)
+                    metrics = self.train_step_fn(self.state, batch, current_grad_accum_steps)
                     
                     # Prevent JAX asynchronous dispatch queue buildup and activation memory leaks
                     # by bounding the maximum queue depth while keeping execution pipelined/async.
@@ -359,6 +406,13 @@ class Trainer:
                             next_batch = next_phase.batch_size
                             next_seq = next_phase.seq_len
                             next_weights = next_phase.weights
+                            
+                            # Check for divisible batch size and gradient accumulation
+                            current_grad_accum_steps = self.grad_accum_steps
+                            if current_grad_accum_steps > 1:
+                                current_grad_accum_steps = min(current_grad_accum_steps, next_batch)
+                                if next_batch % current_grad_accum_steps != 0:
+                                    raise ValueError(f"Batch size {next_batch} of Phase {phase_idx + 2} must be divisible by grad_accum_steps {current_grad_accum_steps}.")
                             
                             if self.logger:
                                 self.logger.log_message(f"🎯 Step {curr_step} hit! Swapping dynamically to Phase {phase_idx + 2} [SEQ: {next_seq} | BATCH: {next_batch}]...")
