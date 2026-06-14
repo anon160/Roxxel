@@ -32,6 +32,7 @@ Roxxel was engineered to remove the friction of writing accelerator-optimized JA
 5. **Dynamic Stream Re-instantiation**: During curriculum phase transitions (e.g. when sequence length changes), Roxxel automatically closes the active stream, computes completed offsets, and swaps the dataset streams instantly.
 6. **Exhaustion Re-normalization**: If one of your mixed datasets runs out of records mid-training, Roxxel removes it from the choice pool and re-normalizes the weights of the remaining active datasets to prevent training stalls.
 7. **Crash-Safe Log Flushing**: In the event of an OOM, crash, or exception, the logger intercepts the exception, logs the stack trace to the system log, and flushes all pending file and stdout writes before bubbling the error.
+8. **Asynchronous NaN Loss Guard**: The trainer periodically checks the materialized loss value at logging or checkpointing intervals. If a NaN is detected, it immediately throws a `ValueError` to halt the run and prevent compute budget waste on divergent parameters.
 
 ---
 

@@ -78,6 +78,11 @@ Alternatively, you can pass custom checkpointer and logger instances or individu
 
 The trainer automatically executes all process-critical training steps within the logger's asynchronous context manager to guarantee tracebacks are logged and flushing occurs even during training crashes. It also executes asynchronous checkpointer flushes and close routines in final cleanup hooks.
 
+### 5. NaN Loss Validation Guard
+During periodic logging (`log_every`) and checkpointing (`checkpoint_every`) intervals, the trainer materializes the loss value on the CPU. The trainer automatically validates that the loss value is not a NaN. If a NaN is detected, it immediately raises a `ValueError` to halt execution.
+
+Because this validation is performed only on logging/checkpointing steps (where the CPU must block to retrieve the value anyway), it introduces zero extra host-device synchronization latency to the asynchronous JAX compilation pipeline.
+
 ---
 
 ## API Reference
