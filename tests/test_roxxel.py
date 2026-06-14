@@ -710,6 +710,64 @@ def test_strict_resumption_determinism():
         shutil.rmtree(temp_dir_2)
         clean_shards(base_name)
 
+def test_trainer_nan_handling():
+    print("--- Testing Trainer NaN Loss Handling ---")
+    try:
+        from roxxel.trainer import Phase, Curriculum, Trainer
+        from flax import nnx
+        import optax
+        import jax.numpy as jnp
+        import pytest
+    except ImportError:
+        return
+
+    import tempfile
+    import shutil
+
+    base_name = "./test_trainer_nan"
+    clean_shards(base_name)
+    
+    tokens = [np.arange(64, dtype=np.int32)]
+    rox = Roxxel(filepath=f"{base_name}_*.rox")
+    rox.write(tokens, separator=None, block_size=256, max_shard_bytes=10000)
+    
+    class SimpleModel(nnx.Module):
+        def __init__(self):
+            self.w = nnx.Param(jnp.array([1.0]))
+        def __call__(self, x):
+            return jnp.sum(x.astype(jnp.float32)) * self.w
+
+    model = SimpleModel()
+    tx = optax.sgd(0.01)
+    optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
+    
+    def nan_loss_fn(model, batch):
+        return jnp.nan
+        
+    temp_dir = tempfile.mkdtemp()
+    
+    try:
+        with Roxxel(filepath=f"{base_name}_*.rox") as ds:
+            phases = [Phase(steps=2, batch_size=2, seq_len=8)]
+            curriculum = Curriculum(primary_streamer=ds, phases=phases)
+            
+            trainer = Trainer(
+                model=model,
+                optimizer=optimizer,
+                curriculum=curriculum,
+                loss_fn=nan_loss_fn,
+                save_path=temp_dir,
+                log_every=1,
+                checkpoint_every=1,
+                seed=42
+            )
+            
+            with pytest.raises(ValueError, match="NaN loss detected"):
+                trainer.run()
+    finally:
+        shutil.rmtree(temp_dir)
+        clean_shards(base_name)
+
 if __name__ == "__main__":
     test_fused_sharded_mode()
     test_int32_tokenized_dataset()
@@ -722,4 +780,5 @@ if __name__ == "__main__":
     test_curriculum_trainer()
     test_sharded_streaming_mesh()
     test_strict_resumption_determinism()
+    test_trainer_nan_handling()
 

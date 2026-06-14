@@ -1,4 +1,5 @@
 import os
+import math
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -375,15 +376,24 @@ class Trainer:
                         curr_step += 1
                         
                     # 1. Asynchronous system logging
-                    if curr_step % self.log_every == 0 and self.logger:
+                    logged_to_csv = False
+                    if (curr_step % self.log_every == 0 and self.logger) or (curr_step % self.checkpoint_every == 0 and self.checkpointer):
                         loss_val = float(metrics["loss"])
-                        ppl = float(metrics["ppl"])
-                        self.logger.log_message(f"S{curr_step} | Loss: {loss_val:.4f} | PPL: {ppl:.2f}")
-                        self.logger.log_metrics_summary(step=curr_step, metrics={"loss": loss_val, "perplexity": ppl})
+                        if math.isnan(loss_val):
+                            raise ValueError(f"NaN loss detected at step {curr_step}.")
                         
-                    # 2. Asynchronous checkpointing
-                    if curr_step % self.checkpoint_every == 0 and self.checkpointer:
-                        self.checkpointer.save(curr_step, metrics_dict={"loss": float(metrics["loss"])})
+                        if curr_step % self.log_every == 0 and self.logger:
+                            ppl = float(metrics["ppl"])
+                            self.logger.log_message(f"S{curr_step} | Loss: {loss_val:.4f} | PPL: {ppl:.2f}")
+                            self.logger.log_metrics_summary(step=curr_step, metrics={"loss": loss_val, "perplexity": ppl})
+                            logged_to_csv = True
+                            
+                        # 2. Asynchronous checkpointing
+                        if curr_step % self.checkpoint_every == 0 and self.checkpointer:
+                            self.checkpointer.save(curr_step, metrics_dict={"loss": loss_val})
+                            if self.logger and not logged_to_csv:
+                                ppl = float(metrics["ppl"])
+                                self.logger.log_metrics_summary(step=curr_step, metrics={"loss": loss_val, "perplexity": ppl})
                         
                     # 3. Model sampling/evaluation
                     if self.eval_fn and curr_step % self.eval_every == 0:
