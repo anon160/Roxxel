@@ -435,6 +435,13 @@ class Trainer:
         finally:
             drain_buffer()
             dataset.close()
+            if self.curriculum.mix_streamers:
+                for ds in self.curriculum.mix_streamers.values():
+                    if hasattr(ds, "close"):
+                        try:
+                            ds.close()
+                        except Exception:
+                            pass
             if self._own_checkpointer and self.checkpointer:
                 # Wait for any pending async checkpoint saves to finish
                 if hasattr(self.checkpointer, "mngr") and hasattr(self.checkpointer.mngr, "wait_until_finished"):
