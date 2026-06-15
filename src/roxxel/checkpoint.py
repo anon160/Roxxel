@@ -57,6 +57,24 @@ class Checkpointer:
             metrics={'loss': loss_val}
         )
 
+        import jax
+        if jax.process_index() == 0:
+            import json
+            metrics_file = os.path.join(self.checkpoint_path, "loss_history.json")
+            history = {}
+            if os.path.exists(metrics_file):
+                try:
+                    with open(metrics_file, "r") as f:
+                        history = json.load(f)
+                except Exception:
+                    pass
+            history[str(step)] = loss_val
+            try:
+                with open(metrics_file, "w") as f:
+                    json.dump(history, f, indent=2)
+            except Exception:
+                pass
+
     def restore(self) -> int:
         """Restores parameters and optimizer tracking vectors natively without dictionary nesting.
 
