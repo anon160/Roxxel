@@ -335,14 +335,16 @@ class Trainer:
             from collections import deque
             metrics_buffer = deque()
 
+            def check_metrics(step, metrics):
+                if isinstance(metrics, dict) and "loss" in metrics:
+                    loss_val = float(metrics["loss"])
+                    if math.isnan(loss_val):
+                        raise ValueError(f"NaN loss detected at step {step}.")
+
             def drain_buffer():
                 while metrics_buffer:
-                    oldest_m = metrics_buffer.popleft()
-                    if isinstance(oldest_m, dict) and "loss" in oldest_m:
-                        try:
-                            oldest_m["loss"].block_until_ready()
-                        except Exception:
-                            pass
+                    old_step, old_metrics = metrics_buffer.popleft()
+                    check_metrics(old_step, old_metrics)
 
             curr_step = start_step
             while curr_step < total_train_steps:
@@ -352,14 +354,12 @@ class Trainer:
                     # Prevent JAX asynchronous dispatch queue buildup and activation memory leaks
                     # by bounding the maximum queue depth while keeping execution pipelined/async.
                     if self.async_queue_depth is not None and self.async_queue_depth > 0:
-                        metrics_buffer.append(metrics)
+                        metrics_buffer.append((curr_step, metrics))
                         if len(metrics_buffer) >= self.async_queue_depth:
-                            oldest = metrics_buffer.popleft()
-                            if isinstance(oldest, dict) and "loss" in oldest:
-                                try:
-                                    oldest["loss"].block_until_ready()
-                                except Exception:
-                                    pass
+                            old_step, old_metrics = metrics_buffer.popleft()
+                            check_metrics(old_step, old_metrics)
+                    else:
+                        check_metrics(curr_step, metrics)
                     
                     if hasattr(self.state, "step"):
                         try:
