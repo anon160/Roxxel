@@ -20,14 +20,12 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=1.20.0",
-    "jax>=0.4.0"
-]
-
-[project.optional-dependencies]
-checkpoint = [
+    "jax>=0.4.0",
     "flax>=0.12.7",
     "orbax-checkpoint>=0.11.40"
 ]
+
+[project.optional-dependencies]
 docs = [
     "mkdocs>=1.5.0",
     "mkdocs-material>=9.0.0",

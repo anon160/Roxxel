@@ -38,14 +38,9 @@ Roxxel was engineered to remove the friction of writing accelerator-optimized JA
 
 ## 📦 Installation
 
-To install the core dataloader and async logging engine only (no JAX required):
+To install Roxxel:
 ```bash
 pip install roxxel
-```
-
-To install the JAX-native asynchronous trainer and checkpointing extensions:
-```bash
-pip install roxxel[checkpoint]
 ```
 
 ---

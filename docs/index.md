@@ -8,16 +8,9 @@ Roxxel is designed specifically for large-scale deep learning pipelines using JA
 
 ## 📦 Installation
 
-Roxxel can be installed via `pip` directly from PyPI.
-
-To install the core dataloader and async logging engine only:
+Roxxel can be installed via `pip` directly from PyPI:
 ```bash
 pip install roxxel
-```
-
-To install the JAX-native asynchronous checkpointing extensions:
-```bash
-pip install roxxel[checkpoint]
 ```
 
 ---
