@@ -53,7 +53,7 @@ Here is a complete, zero-boilerplate example showing how to initialize a model, 
 import jax
 import optax
 from flax import nnx
-from roxxel import Roxxel, Phase, Curriculum, Trainer
+from roxxel import Roxxel, Curriculum, Trainer
 
 # 1. Initialize Flax NNX model and optimizer
 model = nnx.Linear(10, 5, rngs=nnx.Rngs(42))
@@ -62,8 +62,8 @@ optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
 
 # 2. Define the curriculum (e.g., Phase 1: 1000 steps, Phase 2: 500 steps)
 phases = [
-    Phase(steps=1000, batch_size=16, seq_len=128),
-    Phase(steps=500, batch_size=4, seq_len=512)
+    {"steps": 1000, "batch_size": 16, "seq_len": 128},
+    {"steps": 500, "batch_size": 4, "seq_len": 512}
 ]
 curriculum = Curriculum(
     primary_streamer=Roxxel("./wiki_tokens_*.rox"), 

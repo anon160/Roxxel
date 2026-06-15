@@ -14,7 +14,7 @@ With Roxxel, you do not need to write custom training states, or explicitly inst
 import jax
 import optax
 from flax import nnx
-from roxxel import Roxxel, Phase, Curriculum, Trainer
+from roxxel import Roxxel, Curriculum, Trainer
 
 # 1. Define Flax NNX model and optimizer
 model = nnx.Linear(10, 5, rngs=nnx.Rngs(42))
@@ -22,7 +22,7 @@ tx = optax.sgd(0.01)
 optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
 
 # 2. Define the curriculum
-phases = [Phase(steps=1000, batch_size=4, seq_len=10)]
+phases = [{"steps": 1000, "batch_size": 4, "seq_len": 10}]
 curriculum = Curriculum(primary_streamer=Roxxel("./data_*.rox"), phases=phases)
 
 # 3. Define the loss function

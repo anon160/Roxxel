@@ -37,7 +37,7 @@ from flax import nnx
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 from jax.experimental import mesh_utils
 
-from roxxel import Roxxel, Phase, Curriculum, Trainer
+from roxxel import Roxxel, Curriculum, Trainer
 
 # --- 1. DEFINE ARCHITECTURE ---
 class Xenron(nnx.Module):
@@ -98,10 +98,10 @@ def main():
             phase2_steps = int(phase2_full_steps * 0.20) # 20% of long-context epoch
 
         # 2. Define the curriculum schedule
-        # Format: Phase(steps, batch_size, seq_len, optional_weights)
+        # Format: list of dicts specifying steps, batch_size, seq_len
         phases = [
-            Phase(steps=phase1_steps, batch_size=16, seq_len=1025), # Phase 1: Base Pre-training
-            Phase(steps=phase2_steps, batch_size=1, seq_len=32769),  # Phase 2: Context Extension
+            {"steps": phase1_steps, "batch_size": 16, "seq_len": 1025}, # Phase 1: Base Pre-training
+            {"steps": phase2_steps, "batch_size": 1, "seq_len": 32769},  # Phase 2: Context Extension
         ]
         
         # Instantiate primary dataset curriculum
@@ -111,7 +111,7 @@ def main():
         )
 
         # 3. Calculate total optimizer tracking steps
-        total_train_steps = sum(p.steps for p in phases)
+        total_train_steps = sum(p["steps"] for p in phases)
 
         # Continuous decay schedule spanning the full curriculum duration
         tx = optax.chain(

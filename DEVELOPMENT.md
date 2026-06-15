@@ -19,7 +19,7 @@ graph TD
 ```
 
 * **`Roxxel` & `RoxxelStream` ([core.py](file:///home/anon/Code/roxxel/roxxel/core.py)):** Memory-mapped binary shard manager utilizing zero-copy NumPy buffers to feed tokens with zero RAM overhead. Includes background thread prefetching.
-* **`Curriculum` & `Phase` ([trainer.py](file:///home/anon/Code/roxxel/roxxel/trainer.py#L7-L49)):** Organizes multi-phase schedules (sequencing changes in batch size, sequence length, and blend weights). Resolves epoch counts into step counts automatically.
+* **`Curriculum` ([trainer.py](file:///home/anon/Code/roxxel/src/roxxel/trainer.py#L14)):** Organizes multi-phase schedules (sequencing changes in batch size, sequence length, and blend weights using dictionary configurations). Resolves epoch counts into step counts automatically.
 * **`Trainer` ([trainer.py](file:///home/anon/Code/roxxel/roxxel/trainer.py#L60)):** The runtime coordinator that JIT compiles the training loop step, handles sharding specifications, periodically triggers checkpoints/logging, and manages phase swapping boundaries.
 * **`Checkpointer` ([checkpoint.py](file:///home/anon/Code/roxxel/roxxel/checkpoint.py)):** Asynchronous checkpoint saver utilizing Orbax Checkpoint Manager to serialize states without blocking accelerators.
 * **`Logger` ([logging.py](file:///home/anon/Code/roxxel/roxxel/logging.py)):** Rank-zero safe, non-blocking asynchronous metrics logging to standard outputs and CSVs.
