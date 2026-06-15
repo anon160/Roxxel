@@ -102,47 +102,33 @@ def test_int32_tokenized_dataset():
 def test_logger():
     print("--- Testing Logger ---")
     from roxxel import Logger
-    import tempfile
-    import shutil
+    from unittest.mock import MagicMock
+    import sys
     
-    temp_dir = tempfile.mkdtemp()
-    try:
-        # Test normal logging and metrics
-        with Logger(log_dir=temp_dir, filename_prefix="test_log") as logger:
-            logger.log_message("Hello from the test!")
-            logger.log_metrics_summary(step=10, metrics={"loss": 1.23456, "perplexity": 3.456})
+    # 1. Test standard tqdm console logging
+    with Logger(log_dir=None) as logger:
+        logger.init_pbar(total_steps=100, initial_step=0)
+        logger.log_message("Hello from console!")
+        logger.log_metrics_summary(step=10, metrics={"loss": 1.23456})
+        assert logger.pbar is not None
+        assert logger.pbar.n == 10
         
-        log_file = os.path.join(temp_dir, "test_log_system.log")
-        assert os.path.exists(log_file)
-        with open(log_file, "r") as f:
-            content = f.read()
-            assert "Hello from the test!" in content
-
-        csv_file = os.path.join(temp_dir, "test_log_metrics.csv")
-        assert os.path.exists(csv_file)
-        with open(csv_file, "r") as f:
-            lines = f.readlines()
-            assert lines[0] == "step,loss,perplexity\n"
-            assert lines[1] == "10,1.23456,3.45600\n"
+    # 2. Test WandB logging with mocked wandb module
+    mock_wandb = MagicMock()
+    sys.modules["wandb"] = mock_wandb
+    
+    try:
+        with Logger(project="my-project", name="my-run", config={"lr": 0.01}) as logger:
+            logger.init_pbar(total_steps=100)
+            logger.log_metrics_summary(step=20, metrics={"loss": 0.5})
             
-        # Test exception tracking and bubbling
-        try:
-            with Logger(log_dir=temp_dir, filename_prefix="test_crash") as logger:
-                logger.log_message("About to crash...")
-                raise ValueError("Oops, simulation crash!")
-        except ValueError as e:
-            assert str(e) == "Oops, simulation crash!"
-            
-        crash_log_file = os.path.join(temp_dir, "test_crash_system.log")
-        assert os.path.exists(crash_log_file)
-        with open(crash_log_file, "r") as f:
-            content = f.read()
-            assert "About to crash..." in content
-            assert "CRITICAL: Uncaught exception occurred during execution!" in content
-            assert "ValueError: Oops, simulation crash!" in content
-
+        mock_wandb.init.assert_called_once_with(project="my-project", name="my-run", config={"lr": 0.01})
+        mock_wandb.log.assert_called_once_with({"loss": 0.5}, step=20)
+        mock_wandb.finish.assert_called_once()
     finally:
-        shutil.rmtree(temp_dir)
+        if "wandb" in sys.modules:
+            del sys.modules["wandb"]
+            
     print("Logger tests passed successfully!\n")
 
 def test_incomplete_shard_recovery():
@@ -533,9 +519,6 @@ def test_curriculum_trainer():
             # Verify restoration from checkpoints directory
             restored_step = trainer.checkpointer.restore()
             assert restored_step == 4
-            
-            # Verify logger created files
-            assert os.path.exists(os.path.join(temp_dir, "roxxel_system.log"))
     finally:
         shutil.rmtree(temp_dir)
         clean_shards(base_name)

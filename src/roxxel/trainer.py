@@ -287,6 +287,9 @@ class Trainer:
         
         total_train_steps = sum(p["steps"] for p in self.curriculum.phases)
         
+        if self.logger and hasattr(self.logger, "init_pbar"):
+            self.logger.init_pbar(total_steps=total_train_steps, initial_step=start_step)
+        
         if self.logger:
             self.logger.log_message(f"🎯 Total Optimization Horizon: {total_train_steps} global steps.")
             self.logger.log_message(f"♻️ Resuming active phase layout: [SEQ: {current_seq_len} | BATCH: {current_batch_size}]")
