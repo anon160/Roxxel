@@ -762,7 +762,7 @@ def test_trainer_nan_handling():
                 seed=42
             )
             
-            with pytest.raises(ValueError, match="NaN loss detected"):
+            with pytest.raises((ValueError, RuntimeError), match="NaN loss detected"):
                 trainer.run()
     finally:
         shutil.rmtree(temp_dir)

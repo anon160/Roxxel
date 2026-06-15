@@ -7,6 +7,19 @@ import threading
 import numpy as np
 import jax
 
+_DEFAULT_MESH = None
+_DEFAULT_SHARDING = None
+
+def _get_default_sharding():
+    global _DEFAULT_MESH, _DEFAULT_SHARDING
+    if _DEFAULT_SHARDING is None:
+        from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+        from jax.experimental import mesh_utils
+        devices = jax.devices()
+        _DEFAULT_MESH = Mesh(mesh_utils.create_device_mesh((len(devices),)), axis_names=('data',))
+        _DEFAULT_SHARDING = NamedSharding(_DEFAULT_MESH, P('data', None))
+    return _DEFAULT_MESH, _DEFAULT_SHARDING
+
 class RoxxelStream:
     """
     A wrapper around the Python generator returned by stream() that exposes 
@@ -768,11 +781,7 @@ class Roxxel:
 
         # Always construct and use JAX data sharding for device array streaming
         if mesh is None or data_sharding is None:
-            from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
-            from jax.experimental import mesh_utils
-            devices = jax.devices()
-            mesh = Mesh(mesh_utils.create_device_mesh((len(devices),)), axis_names=('data',))
-            data_sharding = NamedSharding(mesh, P('data', None))
+            mesh, data_sharding = _get_default_sharding()
 
         def batch_generator():
             record_ptr = 0
