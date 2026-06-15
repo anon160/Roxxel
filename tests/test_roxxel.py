@@ -463,7 +463,7 @@ def test_mixer_exhaustion_renormalization():
 def test_curriculum_trainer():
     print("--- Testing Curriculum Trainer ---")
     try:
-        from roxxel.trainer import Phase, Curriculum, Trainer, ModelState
+        from roxxel.trainer import Curriculum, Trainer, ModelState
         from flax import nnx
         import optax
         import jax.numpy as jnp
@@ -500,8 +500,8 @@ def test_curriculum_trainer():
     try:
         with Roxxel(filepath=f"{base_name}_*.rox") as ds:
             phases = [
-                Phase(steps=2, batch_size=2, seq_len=8),
-                Phase(steps=3, batch_size=1, seq_len=16)
+                {"steps": 2, "batch_size": 2, "seq_len": 8},
+                {"steps": 3, "batch_size": 1, "seq_len": 16}
             ]
             curriculum = Curriculum(primary_streamer=ds, phases=phases)
             
@@ -582,7 +582,7 @@ def test_sharded_streaming_mesh():
 def test_strict_resumption_determinism():
     print("--- Testing Strict Resumption Determinism (Bit-for-Bit Matching) ---")
     try:
-        from roxxel.trainer import Phase, Curriculum, Trainer, ModelState
+        from roxxel.trainer import Curriculum, Trainer, ModelState
         from flax import nnx
         import optax
         import jax.numpy as jnp
@@ -621,7 +621,7 @@ def test_strict_resumption_determinism():
         opt_ns = nnx.Optimizer(model_ns, tx_ns, wrt=nnx.Param)
         
         with Roxxel(filepath=f"{base_name}_*.rox") as ds:
-            phases = [Phase(steps=6, batch_size=2, seq_len=16)]
+            phases = [{"steps": 6, "batch_size": 2, "seq_len": 16}]
             curr_ns = Curriculum(primary_streamer=ds, phases=phases)
             
             trainer_ns = Trainer(
@@ -646,7 +646,7 @@ def test_strict_resumption_determinism():
         
         # Save a checkpoint at step 3 first by running a trainer to step 3
         with Roxxel(filepath=f"{base_name}_*.rox") as ds:
-            phases_part1 = [Phase(steps=3, batch_size=2, seq_len=16)]
+            phases_part1 = [{"steps": 3, "batch_size": 2, "seq_len": 16}]
             curr_part1 = Curriculum(primary_streamer=ds, phases=phases_part1)
             trainer_part1 = Trainer(
                 model=model_res,
@@ -671,7 +671,7 @@ def test_strict_resumption_determinism():
         
         with Roxxel(filepath=f"{base_name}_*.rox") as ds:
             # Full curriculum (6 steps)
-            phases_full = [Phase(steps=6, batch_size=2, seq_len=16)]
+            phases_full = [{"steps": 6, "batch_size": 2, "seq_len": 16}]
             curr_full = Curriculum(primary_streamer=ds, phases=phases_full)
             
             trainer_resume = Trainer(
@@ -713,7 +713,7 @@ def test_strict_resumption_determinism():
 def test_trainer_nan_handling():
     print("--- Testing Trainer NaN Loss Handling ---")
     try:
-        from roxxel.trainer import Phase, Curriculum, Trainer
+        from roxxel.trainer import Curriculum, Trainer
         from flax import nnx
         import optax
         import jax.numpy as jnp
@@ -748,7 +748,7 @@ def test_trainer_nan_handling():
     
     try:
         with Roxxel(filepath=f"{base_name}_*.rox") as ds:
-            phases = [Phase(steps=2, batch_size=2, seq_len=8)]
+            phases = [{"steps": 2, "batch_size": 2, "seq_len": 8}]
             curriculum = Curriculum(primary_streamer=ds, phases=phases)
             
             trainer = Trainer(

@@ -11,48 +11,32 @@ def _host_check_nan(loss_val, step_val):
     if math.isnan(loss_val):
         raise ValueError(f"NaN loss detected asynchronously at step {int(step_val)}!")
 
-class Phase:
-    """
-    Represents a single phase within a training curriculum schedule.
-
-    Attributes:
-        steps (int): The target number of training steps for this phase.
-        batch_size (int): The batch size to yield during this phase.
-        seq_len (int): The sequence length of each sample in the batch.
-        weights (dict, optional): Dataset blending weights mapping dataset keys to float ratios.
-            Must match the keys provided in Curriculum.mix_streamers (along with 'self').
-    """
-    def __init__(self, steps: int = None, batch_size: int = None, seq_len: int = None, epochs: float = None, weights: dict = None):
-        if steps is None and epochs is None:
-            raise ValueError("Phase must specify either 'steps' or 'epochs'.")
-        if batch_size is None or seq_len is None:
-            raise ValueError("Phase must specify both 'batch_size' and 'seq_len'.")
-        self.steps = steps
-        self.epochs = epochs
-        self.batch_size = batch_size
-        self.seq_len = seq_len
-        self.weights = weights
-
 class Curriculum:
     """
     Manages the multi-phase training curriculum and dataset blending streams.
 
     Attributes:
         primary_streamer (Roxxel): The primary dataset streamer instance.
-        phases (list of Phase): The curriculum timeline of training phases.
+        phases (list of dict): The curriculum timeline of training phases.
         mix_streamers (dict of str: Roxxel, optional): Secondary datasets to mix.
     """
-    def __init__(self, primary_streamer: Roxxel, phases: list[Phase], mix_streamers: dict[str, Roxxel] = None):
+    def __init__(self, primary_streamer: Roxxel, phases: list[dict], mix_streamers: dict[str, Roxxel] = None):
         self.primary_streamer = primary_streamer
         self.mix_streamers = mix_streamers
         
         self.phases = []
         for p in phases:
-            if p.steps is None:
+            p_obj = dict(p)
+            if "batch_size" not in p_obj or "seq_len" not in p_obj:
+                raise ValueError("Phase dict must specify both 'batch_size' and 'seq_len'.")
+            if "steps" not in p_obj and "epochs" not in p_obj:
+                raise ValueError("Phase dict must specify either 'steps' or 'epochs'.")
+                
+            if p_obj.get("steps") is None:
                 # Automatically calculate discrete steps from the requested epochs
-                total_steps_in_epoch = self.primary_streamer.estimate_steps(seq_len=p.seq_len, batch_size=p.batch_size)
-                p.steps = int(total_steps_in_epoch * p.epochs)
-            self.phases.append(p)
+                total_steps_in_epoch = self.primary_streamer.estimate_steps(seq_len=p_obj["seq_len"], batch_size=p_obj["batch_size"])
+                p_obj["steps"] = int(total_steps_in_epoch * p_obj["epochs"])
+            self.phases.append(p_obj)
 
 class ModelState(nnx.Module):
     """
@@ -273,10 +257,10 @@ class Trainer:
         current_grad_accum_steps = 1
         
         for idx, phase in enumerate(self.curriculum.phases):
-            p_steps = phase.steps
-            p_batch = phase.batch_size
-            p_seq = phase.seq_len
-            p_weights = phase.weights
+            p_steps = phase["steps"]
+            p_batch = phase["batch_size"]
+            p_seq = phase["seq_len"]
+            p_weights = phase.get("weights")
             
             if start_step >= accumulated_steps + p_steps:
                 # Add fully completed phases to the historical ledger
@@ -301,7 +285,7 @@ class Trainer:
         steps_already_done_in_current_phase = start_step - accumulated_steps
         remaining_steps_for_session = current_phase_total_steps - steps_already_done_in_current_phase
         
-        total_train_steps = sum(p.steps for p in self.curriculum.phases)
+        total_train_steps = sum(p["steps"] for p in self.curriculum.phases)
         
         if self.logger:
             self.logger.log_message(f"🎯 Total Optimization Horizon: {total_train_steps} global steps.")
@@ -406,15 +390,15 @@ class Trainer:
                     # 4. Extensible phase transition swap
                     phase_boundary_accumulator = 0
                     for phase_idx, phase in enumerate(self.curriculum.phases[:-1]):
-                        phase_boundary_accumulator += phase.steps
+                        phase_boundary_accumulator += phase["steps"]
                         
                         if curr_step == phase_boundary_accumulator:
                             drain_buffer()
                             next_phase = self.curriculum.phases[phase_idx + 1]
-                            next_steps = next_phase.steps
-                            next_batch = next_phase.batch_size
-                            next_seq = next_phase.seq_len
-                            next_weights = next_phase.weights
+                            next_steps = next_phase["steps"]
+                            next_batch = next_phase["batch_size"]
+                            next_seq = next_phase["seq_len"]
+                            next_weights = next_phase.get("weights")
                             
                             # Check for divisible batch size and gradient accumulation
                             current_grad_accum_steps = self.grad_accum_steps
@@ -428,7 +412,7 @@ class Trainer:
                                 
                             # Expand historical ledger
                             completed_phases_ledger = [
-                                (p.steps, p.batch_size, p.seq_len)
+                                (p["steps"], p["batch_size"], p["seq_len"])
                                 for p in self.curriculum.phases[:phase_idx + 1]
                             ]
                             
