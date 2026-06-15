@@ -43,32 +43,35 @@ class RoxxelStream:
         self._started = False
         self._stop_event = threading.Event()
 
-    def _prefetch_worker(self):
+    @staticmethod
+    def _prefetch_worker(stop_event, q_inst, generator, exception_ref):
         try:
-            for item in self.generator:
-                if self._stop_event.is_set():
+            for item in generator:
+                if stop_event.is_set():
                     break
                 
                 # Block until we can put the item, checking for cancellation
-                while not self._stop_event.is_set():
+                while not stop_event.is_set():
                     try:
-                        self._queue.put(item, timeout=0.1)
+                        q_inst.put(item, timeout=0.1)
                         break
                     except queue.Full:
                         continue
                         
-            if not self._stop_event.is_set():
-                while not self._stop_event.is_set():
+            if not stop_event.is_set():
+                while not stop_event.is_set():
                     try:
-                        self._queue.put(None, timeout=0.1)  # Sentinel
+                        q_inst.put(None, timeout=0.1)  # Sentinel
                         break
                     except queue.Full:
                         continue
         except Exception as e:
-            self._exception = e
-            while not self._stop_event.is_set():
+            ref = exception_ref()
+            if ref is not None:
+                ref._exception = e
+            while not stop_event.is_set():
                 try:
-                    self._queue.put(None, timeout=0.1)
+                    q_inst.put(None, timeout=0.1)
                     break
                 except queue.Full:
                     continue
@@ -76,7 +79,12 @@ class RoxxelStream:
     def __iter__(self):
         if not self._started and self.prefetch_size > 0:
             self._started = True
-            self._thread = threading.Thread(target=self._prefetch_worker, daemon=True)
+            import weakref
+            self._thread = threading.Thread(
+                target=self._prefetch_worker,
+                args=(self._stop_event, self._queue, self.generator, weakref.ref(self)),
+                daemon=True
+            )
             self._thread.start()
         return self
 
