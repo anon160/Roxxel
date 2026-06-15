@@ -2,6 +2,7 @@ import os
 import math
 import jax
 import jax.numpy as jnp
+import optax
 from flax import nnx
 from roxxel.core import Roxxel, RoxxelStream
 
@@ -95,7 +96,7 @@ class Trainer:
             optimizer (flax.nnx.Optimizer): The Optax optimizer/Flax NNX optimizer instance. Can be None if a
                 pre-constructed state is passed as the first argument.
             curriculum (Curriculum): The curriculum schedule object.
-            loss_fn (callable): The loss function: loss_fn(model, batch) -> scalar or tuple (loss, aux).
+            loss_fn (callable): The loss function: loss_fn(model, batch) -> scalar.
             save_path (str, optional): The root directory where checkpoints and logs are saved.
                 If provided, `checkpointer` defaults to `save_path/checkpoints` and `logger`
                 defaults to `save_path`.
@@ -174,52 +175,43 @@ class Trainer:
         @nnx.jit(static_argnums=(2,))
         def train_step(state, batch, grad_accum_steps):
             if grad_accum_steps > 1:
-                micro_batches = jnp.split(batch, grad_accum_steps, axis=0)
-                accum_grads = None
-                accum_loss = 0.0
+                graphdef, model_state = nnx.split(state.model)
                 
-                for micro_batch in micro_batches:
-                    def loss_wrapper(model):
-                        out = self.loss_fn(model, micro_batch)
-                        if isinstance(out, (tuple, list)):
-                            return out[0]
-                        elif isinstance(out, dict):
-                            if "loss" in out:
-                                return out["loss"]
-                            return next(iter(out.values()))
-                        return out
-                        
-                    loss, grads = nnx.value_and_grad(loss_wrapper)(state.model)
+                def loss_fn(model_state, micro_batch):
+                    m = nnx.merge(graphdef, model_state)
+                    return self.loss_fn(m, micro_batch)
                     
-                    # Accumulate scaled loss and gradients
-                    accum_loss += loss / grad_accum_steps
-                    if accum_grads is None:
-                        accum_grads = jax.tree.map(lambda g: g / grad_accum_steps, grads)
-                    else:
-                        accum_grads = jax.tree.map(lambda g, ag: ag + g / grad_accum_steps, grads, accum_grads)
+                val_grad_fn = jax.value_and_grad(loss_fn, argnums=0)
                 
+                def scaled_fn(model_state, micro_batch):
+                    loss, grads = val_grad_fn(model_state, micro_batch)
+                    return loss / grad_accum_steps, jax.tree.map(lambda g: g / grad_accum_steps, grads)
+                    
+                micro_fn = optax.microbatching.microbatch(
+                    scaled_fn,
+                    argnums=1,
+                    microbatch_size=batch.shape[0] // grad_accum_steps,
+                    accumulator=(
+                        optax.microbatching.AccumulationType.SUM,
+                        optax.microbatching.AccumulationType.SUM
+                    )
+                )
+                
+                loss, grads = micro_fn(model_state, batch)
                 try:
-                    state.optimizer.update(state.model, accum_grads)
+                    state.optimizer.update(state.model, grads)
                 except TypeError:
-                    state.optimizer.update(accum_grads)
+                    state.optimizer.update(grads)
                 try:
                     state.step[...] += 1
                 except (TypeError, ValueError, AttributeError, KeyError):
                     state.step.value += 1
-                return {"loss": accum_loss, "ppl": jnp.exp(accum_loss)}
+                return {"loss": loss, "ppl": jnp.exp(loss)}
             else:
-                def loss_wrapper(model):
-                    out = self.loss_fn(model, batch)
-                    # Ensure only the scalar loss is returned for gradients
-                    if isinstance(out, (tuple, list)):
-                        return out[0]
-                    elif isinstance(out, dict):
-                        if "loss" in out:
-                            return out["loss"]
-                        return next(iter(out.values()))
-                    return out
+                def loss_fn_wrap(model):
+                    return self.loss_fn(model, batch)
                     
-                loss, grads = nnx.value_and_grad(loss_wrapper)(state.model)
+                loss, grads = nnx.value_and_grad(loss_fn_wrap)(state.model)
                 try:
                     state.optimizer.update(state.model, grads)
                 except TypeError:

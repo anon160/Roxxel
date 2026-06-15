@@ -66,8 +66,8 @@ The `Trainer` automatically defines and compiles a standard Flax JIT training st
 - Optimizer parameters update.
 - Step counter incrementation.
 
-### 3. Robust Loss wrapping
-If your `loss_fn` returns multiple outputs (e.g. `(loss, aux_data)` or `{"loss": loss, "accuracy": acc}`), `Trainer` wraps it using `loss_wrapper` to ensure only the scalar loss is supplied to JAX gradient compilation, avoiding JAX compiler errors while preserving metrics.
+### 3. Strict Scalar Loss Expectation
+The user-supplied `loss_fn` is expected to return a single JAX/float scalar loss value. Returning multiple outputs (such as auxiliary dictionaries, lists, or tuples) is not supported, ensuring clear separation of metric logging and core model optimization.
 
 ### 4. Automatic Resource Management
 If `save_path` is passed, the trainer automatically initializes:
