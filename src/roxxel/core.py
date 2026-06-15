@@ -840,7 +840,7 @@ class Roxxel:
                     
                 numpy_batch = flat_tokens.reshape(batch_size, seq_len)
                 
-                # Yield high-performance JAX device array
-                yield jax.device_put(numpy_batch, data_sharding)
+                # Yield high-performance sharded JAX device array using process-local data
+                yield jax.make_array_from_process_local_data(data_sharding, numpy_batch)
 
         return RoxxelStream(batch_generator(), total_steps, prefetch_size)

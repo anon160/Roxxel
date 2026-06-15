@@ -11,7 +11,7 @@ By utilizing virtualized POSIX memory-mapped dataset sharding, background asynch
 ## 🌟 Key Features
 
 - **OS-Level Memory Mapping (`mmap`)**: Maps multi-terabyte datasets directly into virtual memory via the operating system's kernel page cache. Consumes exactly **0 bytes of Python RAM** for dataset storage.
-- **Unified Causal Streaming**: Automatically chunks, shuffles, and loads batches directly onto JAX device layouts (`jax.device_put`) using your Named Sharding mesh. Exposes the exact step count (`len(stream)`).
+- **Unified Causal Streaming**: Automatically chunks, shuffles, and loads batches directly onto JAX device layouts (`jax.make_array_from_process_local_data`) using your Named Sharding mesh. Exposes the exact step count (`len(stream)`).
 - **Instant Offset Seeking**: Resumes streaming from any step index in under 1 millisecond using binary offsets—completely skipping the need to execute slow dummy fast-forward loops.
 - **Dynamic Dtype Auto-Detection**: Detects datatypes (e.g. `int32` token IDs, `float32` arrays, or raw text bytes) on compilation, writes them in a backward-compatible format, and decodes them perfectly on read.
 - **Multi-Dataset Blending / Mixing**: Blends a primary dataset with multiple secondary datasets using weight ratios. Automatically handles dataset exhaustion mid-phase by re-normalizing weights on the fly.
