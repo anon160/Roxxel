@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "roxxel"
-version = "0.9.10"
+version = "0.9.12"
 description = "A zero-RAM, multi-modal, sharded binary dataset manager"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -23,7 +23,8 @@ dependencies = [
     "jax>=0.10.1",
     "flax>=0.12.7",
     "optax>=0.2.8",
-    "orbax-checkpoint>=0.11.40"
+    "orbax-checkpoint>=0.11.40",
+    "tqdm>=4.65.0"
 ]
 
 [project.optional-dependencies]
@@ -32,6 +33,9 @@ docs = [
     "mkdocs-material>=9.0.0",
     "mkdocstrings[python]>=0.24.0",
     "griffe>=0.38.0"
+]
+wandb = [
+    "wandb>=0.16.0"
 ]
 
 [tool.hatch.build.targets.wheel]
