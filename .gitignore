@@ -6,6 +6,10 @@ __pycache__/
 # Roxxel temporary data files
 *.rox
 
+# Build artifacts
+dist/
+site/
+
 # System & IDE files
 .DS_Store
 Thumbs.db
