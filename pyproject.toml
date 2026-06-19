@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "roxxel"
-version = "0.9.12"
+dynamic = ["version"]
 description = "A zero-RAM, multi-modal, sharded binary dataset manager"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -37,6 +37,9 @@ docs = [
 wandb = [
     "wandb>=0.16.0"
 ]
+
+[tool.hatch.version]
+source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/roxxel"]
