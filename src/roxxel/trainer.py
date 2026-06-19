@@ -332,6 +332,13 @@ class Trainer:
                     old_metrics = metrics_buffer.popleft()
                     jax.block_until_ready(old_metrics)
 
+            # Precompute phase boundary steps for O(1) lookup
+            phase_boundaries = {}
+            boundary_acc = 0
+            for pidx, phase in enumerate(self.curriculum.phases[:-1]):
+                boundary_acc += phase["steps"]
+                phase_boundaries[boundary_acc] = pidx
+
             curr_step = start_step
             while curr_step < total_train_steps:
                 for batch in loader_stream:
@@ -347,19 +354,7 @@ class Trainer:
                     else:
                         jax.block_until_ready(metrics)
                     
-                    if hasattr(self.state, "step"):
-                        try:
-                            curr_step = int(self.state.step[...])
-                        except (TypeError, ValueError, AttributeError, KeyError):
-                            try:
-                                curr_step = int(self.state.step.value)
-                            except (TypeError, ValueError, AttributeError):
-                                try:
-                                    curr_step = int(self.state.step)
-                                except (TypeError, ValueError, AttributeError):
-                                    curr_step += 1
-                    else:
-                        curr_step += 1
+                    curr_step += 1
                         
                     if self.logger:
                         self.logger.update_pbar(curr_step)
@@ -393,45 +388,45 @@ class Trainer:
                         if self.logger and story:
                             self.logger.log_message(f"EVALUATION OUTPUT:\n{story}\n")
                             
-                    # 4. Extensible phase transition swap
-                    phase_boundary_accumulator = 0
-                    for phase_idx, phase in enumerate(self.curriculum.phases[:-1]):
-                        phase_boundary_accumulator += phase["steps"]
+                    # 4. Phase transition swap (O(1) set lookup)
+                    if curr_step in phase_boundaries:
+                        drain_buffer()
+                        phase_idx = phase_boundaries[curr_step]
+                        next_phase = self.curriculum.phases[phase_idx + 1]
+                        next_steps = next_phase["steps"]
+                        next_batch = next_phase["batch_size"]
+                        next_seq = next_phase["seq_len"]
+                        next_weights = next_phase.get("weights")
                         
-                        if curr_step == phase_boundary_accumulator:
-                            drain_buffer()
-                            next_phase = self.curriculum.phases[phase_idx + 1]
-                            next_steps = next_phase["steps"]
-                            next_batch = next_phase["batch_size"]
-                            next_seq = next_phase["seq_len"]
-                            next_weights = next_phase.get("weights")
+                        # Check for divisible batch size and gradient accumulation
+                        current_grad_accum_steps = self.grad_accum_steps
+                        if current_grad_accum_steps > 1:
+                            current_grad_accum_steps = min(current_grad_accum_steps, next_batch)
+                            if next_batch % current_grad_accum_steps != 0:
+                                raise ValueError(f"Batch size {next_batch} of Phase {phase_idx + 2} must be divisible by grad_accum_steps {current_grad_accum_steps}.")
+                        
+                        if self.logger:
+                            self.logger.log_message(f"🎯 Step {curr_step} hit! Swapping dynamically to Phase {phase_idx + 2} [SEQ: {next_seq} | BATCH: {next_batch}]...")
                             
-                            # Check for divisible batch size and gradient accumulation
-                            current_grad_accum_steps = self.grad_accum_steps
-                            if current_grad_accum_steps > 1:
-                                current_grad_accum_steps = min(current_grad_accum_steps, next_batch)
-                                if next_batch % current_grad_accum_steps != 0:
-                                    raise ValueError(f"Batch size {next_batch} of Phase {phase_idx + 2} must be divisible by grad_accum_steps {current_grad_accum_steps}.")
-                            
-                            if self.logger:
-                                self.logger.log_message(f"🎯 Step {curr_step} hit! Swapping dynamically to Phase {phase_idx + 2} [SEQ: {next_seq} | BATCH: {next_batch}]...")
-                                
-                            # Expand historical ledger
-                            completed_phases_ledger = [
-                                (p["steps"], p["batch_size"], p["seq_len"])
-                                for p in self.curriculum.phases[:phase_idx + 1]
-                            ]
-                            
-                            # Re-instantiate JAX stream with updated shape configurations
-                            loader_stream = make_stream(
-                                next_seq,
-                                next_batch,
-                                curr_step,
-                                completed_phases_ledger,
-                                next_steps,
-                                next_weights
-                            )
-                            break
+                        # Expand historical ledger
+                        completed_phases_ledger = [
+                            (p["steps"], p["batch_size"], p["seq_len"])
+                            for p in self.curriculum.phases[:phase_idx + 1]
+                        ]
+                        
+                        # Re-instantiate JAX stream with updated shape configurations
+                        loader_stream = make_stream(
+                            next_seq,
+                            next_batch,
+                            curr_step,
+                            completed_phases_ledger,
+                            next_steps,
+                            next_weights
+                        )
+                        
+                        # Free old compiled programs for previous shapes
+                        jax.clear_caches()
+                        break
                             
                     if curr_step >= total_train_steps:
                         drain_buffer()
