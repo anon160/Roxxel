@@ -6,8 +6,7 @@ class Logger:
     """
     A lightweight, asynchronous-friendly Rank-0 Logger for Roxxel.
     
-    Provides interactive terminal progress bars via `tqdm` and optional 
-    cloud-based run tracking via `wandb` (Weights & Biases). Coordinates 
+    Provides interactive terminal progress bars via `tqdm`. Coordinates 
     stdout printing exclusively on Rank 0 to prevent terminal clutter in 
     distributed JAX/Flax training runs.
     """
@@ -15,22 +14,18 @@ class Logger:
         """
         Args:
             log_dir (str, optional): Root directory to save logs (no-op here, kept for backward compatibility).
-            project (str, optional): Weights & Biases project name. If provided, initializes wandb.
-            name (str, optional): Display name for the Weights & Biases run.
-            config (dict, optional): Hyperparameter dictionary to save to the wandb run configuration.
+            project (str, optional): Kept for backward compatibility (originally for Weights & Biases project name).
+            name (str, optional): Kept for backward compatibility.
+            config (dict, optional): Kept for backward compatibility.
         """
         import jax
         self.is_rank_zero = (jax.process_index() == 0)
-        self.project = project
         self.pbar = None
         self._log_dir = log_dir
 
         if self.is_rank_zero:
             if log_dir:
                 os.makedirs(log_dir, exist_ok=True)
-            if project:
-                import wandb
-                wandb.init(project=project, name=name, config=config)
 
     def init_pbar(self, total_steps: int, initial_step: int = 0):
         """
@@ -56,10 +51,6 @@ class Logger:
                 import traceback
                 print("\n❌ CRITICAL: Uncaught exception occurred during execution!", file=sys.stderr)
                 traceback.print_exception(exc_type, exc_val, exc_tb, file=sys.stderr)
-                
-                if self.project:
-                    import wandb
-                    wandb.finish(exit_code=1)
             else:
                 self.close()
         return False
@@ -74,7 +65,7 @@ class Logger:
                 print(message)
 
     def log_metrics_summary(self, step: int, metrics: dict):
-        """Updates the progress bar postfix metrics and pushes summaries asynchronously to WandB."""
+        """Updates the progress bar postfix metrics."""
         if self.is_rank_zero:
             if self.pbar is not None:
                 self.pbar.update(step - self.pbar.n)
@@ -84,16 +75,10 @@ class Logger:
                     for k, v in metrics.items()
                 }
                 self.pbar.set_postfix(**formatted_metrics)
-            if self.project:
-                import wandb
-                wandb.log(metrics, step=step)
 
     def close(self):
-        """Cleans up and finalizes progress bars and wandb runs."""
+        """Cleans up and finalizes progress bars."""
         if self.is_rank_zero:
             if self.pbar is not None:
                 self.pbar.close()
                 self.pbar = None
-            if self.project:
-                import wandb
-                wandb.finish()

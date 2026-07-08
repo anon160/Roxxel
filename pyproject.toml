@@ -34,8 +34,8 @@ docs = [
     "mkdocstrings[python]>=0.24.0",
     "griffe>=0.38.0"
 ]
-wandb = [
-    "wandb>=0.16.0"
+tokenizers = [
+    "tokenizers>=0.15.0"
 ]
 
 [tool.hatch.version]
@@ -43,3 +43,6 @@ source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/roxxel"]
+
+[tool.poetry]
+package-mode = false

@@ -57,8 +57,10 @@ def token_generator():
 
 DATASET_PATTERN = "./wiki_*.rox"
 rox = Roxxel(DATASET_PATTERN)
-# Compile raw token generator into uniform 4KB block archives
-rox.write(token_generator(), separator=b"\x00", block_size=4096, max_shard_bytes=1024**3)
+# Compile raw token generator into uniform 4KB block archives.
+# If you are using raw text instead, you can pass your tokenizer directly:
+# rox.write(text_generator(), tokenizer=tokenizer, block_size=4096)
+rox.write(token_generator(), separator=None, block_size=4096, max_shard_bytes=1024**3)
 
 # --- 3. TRAINING HYPERPARAMETERS ---
 GLOBAL_SEED = 42

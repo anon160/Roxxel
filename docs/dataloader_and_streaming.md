@@ -32,6 +32,44 @@ with Roxxel(filepath="/content/fineweb_edu_*.rox") as dataset:
 
 ---
 
+## Compiling Datasets with Tokenizers
+
+When compiling raw datasets into Roxxel's uniform block format, you can integrate a Hugging Face tokenizer (from either the `tokenizers` or `transformers` library) directly. 
+
+Providing a `tokenizer` to `Roxxel.write()` enables:
+* **On-the-Fly Tokenization**: Strings yielded by the generator are automatically tokenized.
+* **Native EOS Document Separator**: The tokenizer's End-Of-Sequence (EOS) token ID is automatically extracted and injected as a separator between documents.
+* **Auto-Dtype Resolution**: If the tokenizer's vocabulary size is greater than 65,535, Roxxel compiles the dataset with `int32` token IDs; otherwise, it uses `int16` for optimal storage.
+* **Padding Alignment**: The block padding uses the tokenizer's `pad_token_id` (falling back to `eos_token_id`).
+
+### Example: Compiling Text Data with a Tokenizer
+
+```python
+from roxxel import Roxxel
+from tokenizers import Tokenizer
+
+# 1. Load a Hugging Face tokenizer (or pass a model ID string like "meta-llama/Llama-3-8B")
+tokenizer = Tokenizer.from_pretrained("meta-llama/Llama-3-8B")
+
+# 2. Define text stream generator
+def text_generator():
+    yield "The quick brown fox jumps over the lazy dog."
+    yield "JAX-native streaming is extremely fast."
+
+# 3. Compile raw text into uniform 4KB block archives
+rox = Roxxel("./data/dataset_*.rox")
+rox.write(
+    text_generator(),
+    tokenizer=tokenizer,
+    block_size=4096,
+    max_shard_bytes=1024**3
+)
+```
+
+For backward compatibility, you can write raw pre-tokenized binary files by omitting `tokenizer` and specifying a binary `separator` (e.g. `separator=b"\x00"` or `separator=None`).
+
+---
+
 ## JAX-Native Device Sharding
 
 Roxxel streams JAX arrays directly into your hardware topology (TPU Mesh or GPU grid) without copying data twice or causing CPU-to-GPU materialization spikes.

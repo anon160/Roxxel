@@ -102,8 +102,6 @@ def test_int32_tokenized_dataset():
 def test_logger():
     print("--- Testing Logger ---")
     from roxxel import Logger
-    from unittest.mock import MagicMock
-    import sys
     
     # 1. Test standard tqdm console logging
     with Logger(log_dir=None) as logger:
@@ -114,22 +112,6 @@ def test_logger():
         assert logger.pbar.n == 10
         logger.update_pbar(step=15)
         assert logger.pbar.n == 15
-        
-    # 2. Test WandB logging with mocked wandb module
-    mock_wandb = MagicMock()
-    sys.modules["wandb"] = mock_wandb
-    
-    try:
-        with Logger(project="my-project", name="my-run", config={"lr": 0.01}) as logger:
-            logger.init_pbar(total_steps=100)
-            logger.log_metrics_summary(step=20, metrics={"loss": 0.5})
-            
-        mock_wandb.init.assert_called_once_with(project="my-project", name="my-run", config={"lr": 0.01})
-        mock_wandb.log.assert_called_once_with({"loss": 0.5}, step=20)
-        mock_wandb.finish.assert_called_once()
-    finally:
-        if "wandb" in sys.modules:
-            del sys.modules["wandb"]
             
     print("Logger tests passed successfully!\n")
 
@@ -753,6 +735,64 @@ def test_trainer_nan_handling():
         shutil.rmtree(temp_dir)
         clean_shards(base_name)
 
+def test_tokenizer_integration():
+    print("--- Testing Tokenizer Integration ---")
+    import pytest
+    
+    # 1. Create a mock tokenizer
+    class DummyTokenizer:
+        def __init__(self, vocab_size=1000, eos_token_id=2, pad_token_id=0):
+            self.vocab_size = vocab_size
+            self.eos_token_id = eos_token_id
+            self.pad_token_id = pad_token_id
+            
+        def encode(self, text):
+            # Let's say it just returns the length of the words as token IDs
+            return [len(word) for word in text.split()]
+            
+        def token_to_id(self, token):
+            if token in ('</s>', '<|endoftext|>', '<eos>', '<|end|>', '[EOS]'):
+                return self.eos_token_id
+            if token in ('<pad>', '[PAD]', '<|pad|>'):
+                return self.pad_token_id
+            return None
+            
+        def get_vocab_size(self):
+            return self.vocab_size
+
+    tok_16 = DummyTokenizer(vocab_size=500) # Should use int16
+    tok_32 = DummyTokenizer(vocab_size=100000) # Should use int32
+
+    base_name = "./test_tokenizer_int"
+    clean_shards(base_name)
+
+    # 2. Test input validation (cannot specify both)
+    rox_val = Roxxel(filepath=f"{base_name}_*.rox")
+    with pytest.raises(ValueError, match="Cannot specify both 'tokenizer' and 'separator'"):
+        rox_val.write(["hello"], separator=b"\xff", tokenizer=tok_16)
+
+    # 3. Test writing with int16 tokenizer auto-detection and tokenization
+    sentences = ["hello world", "jax native training"]
+    rox = Roxxel(filepath=f"{base_name}_*.rox")
+    rox.write(sentences, tokenizer=tok_16, block_size=16) # small block size
+    
+    with Roxxel(filepath=f"{base_name}_*.rox") as ds:
+        assert ds.dtype == "int16"
+        assert len(ds) > 0
+        assert len(ds[0]) == 16
+        
+    clean_shards(base_name)
+
+    # 4. Test writing with int32 tokenizer auto-detection
+    rox.write(sentences, tokenizer=tok_32, block_size=32)
+    with Roxxel(filepath=f"{base_name}_*.rox") as ds:
+        assert ds.dtype == "int32"
+        assert len(ds) > 0
+        assert len(ds[0]) == 32
+        
+    clean_shards(base_name)
+    print("Tokenizer integration tests passed successfully!\n")
+
 if __name__ == "__main__":
     test_fused_sharded_mode()
     test_int32_tokenized_dataset()
@@ -766,4 +806,5 @@ if __name__ == "__main__":
     test_sharded_streaming_mesh()
     test_strict_resumption_determinism()
     test_trainer_nan_handling()
+    test_tokenizer_integration()
 

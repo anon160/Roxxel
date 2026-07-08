@@ -162,26 +162,230 @@ class Roxxel:
     # =====================================================================
     # API 1: FUSED FIXED-BLOCK WRITE STREAM (WITH SHARDING)
     # =====================================================================
+    # =====================================================================
+    # API 1: FUSED FIXED-BLOCK WRITE STREAM (WITH SHARDING)
+    # =====================================================================
+
+    @staticmethod
+    def _load_tokenizer(tokenizer):
+        """
+        Resolves a tokenizer argument into a tokenizer instance.
+
+        Args:
+            tokenizer: A tokenizer instance (with an encode method), or a string
+                (HuggingFace model ID or local path) to load one from.
+
+        Returns:
+            A tokenizer instance.
+        """
+        if hasattr(tokenizer, "encode"):
+            return tokenizer
+
+        if isinstance(tokenizer, str):
+            try:
+                from tokenizers import Tokenizer
+                return Tokenizer.from_pretrained(tokenizer)
+            except (ImportError, Exception):
+                try:
+                    from transformers import AutoTokenizer
+                    return AutoTokenizer.from_pretrained(tokenizer)
+                except ImportError:
+                    raise ImportError(
+                        "The 'tokenizers' or 'transformers' package is required to load a tokenizer from a string. "
+                        "Please install one of them."
+                    )
+        else:
+            raise TypeError(
+                "tokenizer must be a tokenizer instance (with an encode method) or a "
+                "HuggingFace model ID/local path string."
+            )
+
     def write(
         self,
         data_generator,
-        separator: bytes,
+        separator: bytes = None,
         block_size: int = 4096,
         max_shard_bytes: int = None,
         dtype: str = None,
+        tokenizer=None,
     ):
         """
         Accepts a stream of strings, bytes, or numpy arrays, packs them into strictly uniform
         blocks of `block_size` bytes (with padding), and writes them to shards or a single file.
 
+        When a ``tokenizer`` is provided, string inputs are automatically tokenized
+        and the tokenizer's EOS token is used as a document separator. Padding uses
+        the tokenizer's pad token (falling back to EOS if no pad token exists).
+
         Args:
             data_generator: Iterator yielding strings, raw bytes, bytearrays, or numpy arrays.
-            separator (bytes): Separator appended after each item in the stream.
+            separator (bytes, optional): Binary separator appended after each item.
+                Mutually exclusive with ``tokenizer``. Defaults to None.
             block_size (int, optional): The target size of each uniform block in bytes. Defaults to 4096.
             max_shard_bytes (int, optional): Maximum size of each shard file in bytes. If exceeded,
                 a new shard is created. Defaults to None (single file).
             dtype (str, optional): Target numpy dtype for the items. If None, it is automatically detected.
                 Defaults to None.
+            tokenizer (tokenizer or str, optional): A HuggingFace tokenizer instance
+                or a model ID string to load one from. When provided, text inputs are tokenized
+                automatically and the tokenizer's EOS token ID is used as the document separator.
+                Mutually exclusive with ``separator``. Defaults to None.
+        """
+        if tokenizer is not None and separator is not None:
+            raise ValueError(
+                "Cannot specify both 'tokenizer' and 'separator'. "
+                "When a tokenizer is provided, the EOS token is used as the separator automatically."
+            )
+
+        if tokenizer is not None:
+            self._write_tokenized(
+                data_generator, tokenizer, block_size, max_shard_bytes, dtype
+            )
+        else:
+            self._write_raw(
+                data_generator, separator, block_size, max_shard_bytes, dtype
+            )
+
+    def _write_tokenized(
+        self,
+        data_generator,
+        tokenizer,
+        block_size: int = 4096,
+        max_shard_bytes: int = None,
+        dtype: str = None,
+    ):
+        """
+        Internal tokenized write path. Tokenizes text inputs on the fly,
+        injects the EOS token between documents, and packs into uniform blocks.
+        """
+        tok = self._load_tokenizer(tokenizer)
+        self.close()
+
+        # Deduce a write path even if self.filepaths is empty due to a new glob pattern
+        if len(self.filepaths) == 0:
+            if self.raw_filepath:
+                base_path = self.raw_filepath
+            else:
+                raise ValueError("No filepath specified to write to.")
+        else:
+            base_path = self.filepaths[0]
+
+        # Extract separator and padding token IDs
+        eos_id = None
+        if hasattr(tok, 'eos_token_id') and tok.eos_token_id is not None:
+            eos_id = tok.eos_token_id
+
+        if eos_id is None and hasattr(tok, 'token_to_id'):
+            # Check common EOS token names
+            for eos_candidate in ['</s>', '<|endoftext|>', '<eos>', '<|end|>', '[EOS]']:
+                candidate_id = tok.token_to_id(eos_candidate)
+                if candidate_id is not None:
+                    eos_id = candidate_id
+                    break
+
+        if eos_id is None:
+            if hasattr(tok, 'get_vocab_size'):
+                eos_id = tok.get_vocab_size() - 1
+            elif hasattr(tok, 'vocab_size'):
+                eos_id = tok.vocab_size - 1
+            else:
+                eos_id = 0
+
+        # Determine pad token ID (fall back to EOS)
+        pad_id = None
+        if hasattr(tok, 'pad_token_id') and tok.pad_token_id is not None:
+            pad_id = tok.pad_token_id
+
+        if pad_id is None and hasattr(tok, 'token_to_id'):
+            for pad_candidate in ['<pad>', '[PAD]', '<|pad|>']:
+                candidate_id = tok.token_to_id(pad_candidate)
+                if candidate_id is not None:
+                    pad_id = candidate_id
+                    break
+        if pad_id is None:
+            pad_id = eos_id
+
+        # Determine vocab size
+        vocab_size = None
+        if hasattr(tok, 'get_vocab_size'):
+            vocab_size = tok.get_vocab_size()
+        elif hasattr(tok, 'vocab_size'):
+            vocab_size = tok.vocab_size
+        else:
+            vocab_size = 65536
+
+        # Determine token dtype — use int32 for vocab sizes > 65535, else int16
+        if dtype is not None:
+            token_dtype = np.dtype(dtype)
+        elif vocab_size > 65535:
+            token_dtype = np.dtype("int32")
+        else:
+            token_dtype = np.dtype("int16")
+
+        element_size = token_dtype.itemsize
+        detected_dtype = str(token_dtype)
+
+        # Separator as a single-element numpy array in the token dtype
+        sep_bytes = np.array([eos_id], dtype=token_dtype).tobytes()
+        pad_bytes_single = np.array([pad_id], dtype=token_dtype).tobytes()
+
+        def uniform_block_generator():
+            buffer = bytearray()
+
+            for item in data_generator:
+                if isinstance(item, str):
+                    encoding = tok.encode(item)
+                    if hasattr(encoding, 'ids'):
+                        token_ids = encoding.ids
+                    elif isinstance(encoding, dict) and 'input_ids' in encoding:
+                        token_ids = encoding['input_ids']
+                    else:
+                        token_ids = encoding
+                    item_bytes = np.array(token_ids, dtype=token_dtype).tobytes()
+                elif isinstance(item, np.ndarray):
+                    item_bytes = item.astype(token_dtype).tobytes()
+                elif isinstance(item, (list, tuple)):
+                    item_bytes = np.array(item, dtype=token_dtype).tobytes()
+                elif isinstance(item, (bytes, bytearray)):
+                    item_bytes = bytes(item)
+                else:
+                    raise TypeError(
+                        "Data generator items must be strings, numpy arrays, "
+                        "lists/tuples of token IDs, or raw bytes."
+                    )
+
+                buffer.extend(item_bytes)
+                buffer.extend(sep_bytes)
+
+                while len(buffer) >= block_size:
+                    yield bytes(buffer[:block_size])
+                    del buffer[:block_size]
+
+            # Flush trailing residual blocks with padding
+            if len(buffer) > 0:
+                pad_len = block_size - len(buffer)
+                pad_bytes = (pad_bytes_single * (pad_len // element_size + 1))[:pad_len]
+                buffer.extend(pad_bytes)
+                yield bytes(buffer)
+
+        # Call underlying write orchestrator
+        self._write_orchestrator(
+            uniform_block_generator(),
+            max_shard_bytes,
+            lambda: detected_dtype,
+        )
+
+    def _write_raw(
+        self,
+        data_generator,
+        separator: bytes = None,
+        block_size: int = 4096,
+        max_shard_bytes: int = None,
+        dtype: str = None,
+    ):
+        """
+        Internal raw write path. Original byte-level packing logic with an explicit
+        binary separator.
         """
         self.close()
 
